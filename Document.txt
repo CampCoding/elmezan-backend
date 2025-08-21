@@ -1,0 +1,36 @@
+1
+
+Open_ProgramQ      view
+
+SELECT User_Name, Admin, auto_no FROM Open_ProgramQ WHERE (auto_no = 5) OR (auto_no = 6)
+كيفية اختيار اسم المستخدم
+=================================
+2
+
+unbound form
+=================================
+3
+
+INVOICE_vIEW      view
+
+الكابتن
+SELECT CAPTAN_TB.CAPTAN_NO, CAPTAN_TB.CAPTAN_NAME
+FROM CAPTAN_TB
+
+
+sub_form
+sale_menu_q     view
+
+حقل الملاحظات
+notice_tb
+
+
+
+
+============================
+4
+
+nkha           table
+==============================
+
+
