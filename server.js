@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const morgan = require("morgan");
+// const morgan = require("morgan");
 require("dotenv").config({ path: "./config.env" });
 
 const app = express();
@@ -11,17 +11,23 @@ const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const areaRoutes = require("./routes/areas");
 const tableRoutes = require("./routes/tables"); 
+const tabTabelsRoutes = require("./routes/tab_tabels");
 const bookingRoutes = require("./routes/bookings");
 const captainRoutes = require("./routes/captains");
 const menuRoutes = require("./routes/menu");
-const orderRoutes = require("./routes/orders");
+// const orderRoutes = require("./routes/orders"); // Removed - using invoice-based workflow instead
+const invoiceRoutes = require("./routes/invoice");
+const flavorsRoutes = require("./routes/flavors");
+const printerRoutes = require("./routes/printers");
+const { exec } = require("child_process");
 
 // Import database functions for testing
 const { connectDB, executeQuery } = require("./config/database");
+const { initializeTabTabels } = require("./config/init-tab-tabels");
 
 // Middleware
 app.use(cors());
-app.use(morgan("combined"));
+// app.use(morgan("combined")); 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -30,10 +36,98 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/areas", areaRoutes);
 app.use("/api/tables", tableRoutes);
+app.use("/api/tab_tabels", tabTabelsRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/captains", captainRoutes);
 app.use("/api/menu", menuRoutes);
-app.use("/api/orders", orderRoutes);
+// app.use("/api/orders", orderRoutes); // Removed - using invoice-based workflow instead
+app.use("/api/invoice", invoiceRoutes);
+app.use("/api/flavors", flavorsRoutes);
+app.use("/api/printers", printerRoutes);
+
+// Admin: graceful shutdown endpoint
+app.post("/api/admin/shutdown", async (req, res) => {
+  try {
+    res.json({ success: true, message: "Server shutting down and killing processes" });
+
+    // Give the response time to flush, then kill processes and exit
+    setTimeout(() => {
+      // Attempt to kill node and npm processes (Windows only)
+      if (process.platform === "win32") {
+        const { exec } = require("child_process");
+        
+        // Kill Google Chrome processes
+        exec('taskkill /F /IM chrome.exe /T', (err) => {
+          // Ignore errors
+        });
+        
+        // Kill node.exe and npm.exe processes
+        exec('taskkill /F /IM node.exe /T', (err) => {
+          // Ignore errors
+        });
+        exec('taskkill /F /IM npm.exe /T', (err) => {
+          // Ignore errors
+        });
+
+        // Attempt to close the parent command window (CMD/PowerShell) if not an IDE terminal
+        const parentPid = process.ppid;
+        const isVSCode = String(process.env.TERM_PROGRAM || '').toLowerCase().includes('vscode');
+        const isWindowsTerminal = !!process.env.WT_SESSION; // Windows Terminal sets WT_SESSION
+        if (!isVSCode && !isWindowsTerminal && parentPid && Number.isFinite(parentPid)) {
+          exec(`taskkill /F /PID ${parentPid}`, (err) => {
+            // Ignore errors (may be denied when launched from IDE)
+          });
+        }
+
+        // As a fallback, walk up the process tree and close the first cmd.exe or powershell.exe ancestor
+        if (!isVSCode && !isWindowsTerminal) {
+          const psCommand = `
+            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$PID";
+            while ($current) {
+              $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($current.ParentProcessId)";
+              if ($null -ne $parent -and ($parent.Name -match 'cmd.exe|powershell.exe')) {
+                try { Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+                break
+              }
+              $current = $parent
+            }
+          `;
+          exec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${psCommand.replace(/\n/g, ' ').replace(/\"/g, '\\\"')}"`, (err) => {
+            // Ignore errors
+          });
+        }
+      } else {
+        // On Unix-like systems, try to kill all node processes except the current one
+        const { exec } = require("child_process");
+        exec(`pkill -f node`, (err) => {
+          // Ignore errors
+        });
+        exec(`pkill -f npm`, (err) => {
+          // Ignore errors
+        });
+      }
+      
+      // Reopen Chrome without any tabs after a delay
+      setTimeout(() => {
+        if (process.platform === "win32") {
+          exec('start chrome --new-window', (err) => {
+            // Ignore errors
+          });
+        } else {
+          // On Unix-like systems
+          exec('google-chrome --new-window', (err) => {
+            // Ignore errors
+          });
+        }
+      }, 1000);
+      
+      // Exit the current process after a short delay to allow kill commands to propagate
+      setTimeout(() => process.exit(0), 300);
+    }, 200);
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 // Database connection test endpoint
 app.get("/api/test-db", async (req, res) => {
@@ -133,16 +227,13 @@ app.use((req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 AlMizan server running on port ${PORT}`);
-  console.log(
-    `🔌 Database: ${process.env.DB_TYPE} on ${process.env.DB_SERVER}`
-  );
-  console.log(`📊 Database: ${process.env.DB_NAME}`);
-  console.log(`👤 User: ${process.env.DB_USER}`);
-  console.log(`🌐 API available at http://localhost:${PORT}/api`);
-  console.log(
-    `🔍 Test database connection: http://localhost:${PORT}/api/test-db`
-  );
-  console.log(`📖 API info: http://localhost:${PORT}/`);
+app.listen(PORT, async () => {
+  
+  
+  // تهيئة البيانات الأولية لجدول Tab_tabels
+  try {
+    await initializeTabTabels();
+  } catch (error) {
+    console.error("❌ Failed to initialize Tab_tabels:", error);
+  }
 });

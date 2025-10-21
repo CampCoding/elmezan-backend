@@ -78,7 +78,7 @@ router.post('/login', async (req, res) => {
       success: false,
       message: 'Login failed',
       error: error.message
-    });
+    }); 
   }
 });
 

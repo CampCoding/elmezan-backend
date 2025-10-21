@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>فاتورة المطعم</title>
+    <style>
+        @media print {
+            body { margin: 0; padding: 10px; }
+            .no-print { display: none; }
+        }
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: white;
+            direction: rtl;
+            text-align: right;
+        }
+        
+        .invoice-container {
+            max-width: 400px;
+            margin: 0 auto;
+            border: 2px solid #333;
+            padding: 20px;
+            background: white;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+        }
+        
+        .restaurant-name {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin: 0;
+        }
+        
+        .restaurant-subtitle {
+            font-size: 14px;
+            color: #666;
+            margin: 5px 0;
+        }
+        
+        .header-line {
+            background: #f0f0f0;
+            padding: 8px;
+            text-align: center;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .customer-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .info-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .info-item {
+            font-size: 12px;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .info-value {
+            color: #666;
+        }
+        
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        .items-table th {
+            background: #f0f0f0;
+            padding: 10px;
+            text-align: center;
+            font-weight: bold;
+            border: 1px solid #ddd;
+        }
+        
+        .items-table td {
+            padding: 8px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }
+        
+        .totals {
+            margin-top: 20px;
+            border-top: 2px solid #333;
+            padding-top: 15px;
+        }
+        
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        
+        .grand-total {
+            background: #f0f0f0;
+            padding: 10px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            border-top: 2px solid #333;
+            padding-top: 15px;
+        }
+        
+        .footer-line {
+            background: #f0f0f0;
+            padding: 8px;
+            margin: 5px 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <div class="header">
+            <h1 class="restaurant-name">جودا</h1>
+            <p class="restaurant-subtitle">Restaurant & Cafe</p>
+            <div class="header-line">#Name?</div>
+        </div>
+        
+        <div class="customer-info">
+            <div class="info-item">
+                <span class="info-label">اسم الزبون:</span>
+                <span class="info-value"></span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">القائمة:</span>
+                <span class="info-value"></span>
+            </div>
+        </div>
+        
+        <div class="info-row">
+            <div class="info-item">
+                <span class="info-label">تاريخ:</span>
+                <span class="info-value">١١‏/٣‏/١٤٤٧ هـ</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">الطاولة:</span>
+                <span class="info-value">N/A</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">الكاشير:</span>
+                <span class="info-value">16</span>
+            </div>
+        </div>
+        
+        <div class="info-row">
+            <div class="info-item">
+                <span class="info-label">الوقت:</span>
+                <span class="info-value">١١:٤١:٥٩ ص</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">الملاحظات:</span>
+                <span class="info-value"></span>
+            </div>
+        </div>
+        
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th>الكمية</th>
+                    <th>التفاصيل</th>
+                    <th>المبلغ</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                    <tr>
+                        <td>2</td>
+                        <td>invoice_487_2305</td>
+                        <td>NaN</td>
+                    </tr>
+                
+            </tbody>
+        </table>
+        
+        <div class="totals">
+            <div class="total-row">
+                <span>الخصم:</span>
+                <span>د.ع. 0</span>
+            </div>
+            <div class="total-row">
+                <span>الطلب:</span>
+                <span></span>
+            </div>
+            <div class="grand-total">
+                المجموع: 0 د.ع.
+            </div>
+        </div>
+        
+        <div class="footer">
+            <div class="footer-line">#Name?</div>
+            <div class="footer-line">#Name?</div>
+        </div>
+    </div>
+</body>
+</html>

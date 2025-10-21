@@ -5,20 +5,20 @@ const fs = require("fs");
 const path = require("path");
 // Create a new order (based on your frontend ordering interface)
 router.post("/", async (req, res) => {
-  try {
+  try { 
     const { tableNumber, items, customerName, captainId, totalAmount, notes } = req.body;
     // Add New Order To Orders.json
     const newOrder = {
-      tableNumber,
+      tableNumber, 
       items,
-      customerName,
+      customerName, 
       captainId,
       totalAmount,
-      notes,
+      notes, 
       status: "pending",
 
     };
-    // array of orders
+    // array of orders 
     const orders = JSON.parse(fs.readFileSync(path.join(__dirname, "orders.json"), "utf8"));
     // Put Order Number And Date To Order
     newOrder.orderNumber = orders.length + 1;
@@ -27,7 +27,7 @@ router.post("/", async (req, res) => {
     // Last Order In First
     orders.unshift(newOrder);
     fs.writeFileSync(path.join(__dirname, "orders.json"), JSON.stringify(orders, null, 2));
-    console.log("New order added to orders.json");
+    
 
     return res.status(201).json({
       success: true,
@@ -71,7 +71,7 @@ router.post("/", async (req, res) => {
     // Last Order In First
     orders.unshift(newOrder);
     fs.writeFileSync(path.join(__dirname, "orders.json"), JSON.stringify(orders, null, 2));
-    console.log("New order added to orders.json");
+    
 
     return res.status(201).json({
       success: true,

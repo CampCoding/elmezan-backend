@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إيصال دفع</title>
+    <style>
+        @media print {
+            body { margin: 0; padding: 10px; }
+            .no-print { display: none; }
+        }
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: white;
+            direction: rtl;
+            text-align: right;
+        }
+        
+        .receipt-container {
+            max-width: 350px;
+            margin: 0 auto;
+            border: 2px solid #333;
+            padding: 20px;
+            background: white;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+        }
+        
+        .restaurant-name {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin: 0;
+        }
+        
+        .restaurant-subtitle {
+            font-size: 14px;
+            color: #666;
+            margin: 5px 0;
+        }
+        
+        .header-line {
+            background: #f0f0f0;
+            padding: 8px;
+            text-align: center;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .receipt-title {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin: 20px 0;
+            background: #f0f0f0;
+            padding: 10px;
+        }
+        
+        .payment-info {
+            margin: 20px 0;
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .info-value {
+            color: #666;
+        }
+        
+        .payment-summary {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+        }
+        
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            font-size: 14px;
+        }
+        
+        .thank-you {
+            text-align: center;
+            margin: 20px 0;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            background: #f0f0f0;
+            padding: 10px;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            border-top: 2px solid #333;
+            padding-top: 15px;
+        }
+        
+        .footer-line {
+            background: #f0f0f0;
+            padding: 8px;
+            margin: 5px 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="receipt-container">
+        <div class="header">
+            <h1 class="restaurant-name">جودا</h1>
+            <p class="restaurant-subtitle">Restaurant & Cafe</p>
+            <div class="header-line">#Name?</div>
+        </div>
+        
+        <div class="receipt-title">إيصال دفع</div>
+        
+        <div class="payment-info">
+            <div class="info-row">
+                <span class="info-label">تاريخ:</span>
+                <span class="info-value">١٧‏/٣‏/١٤٤٧ هـ</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">الوقت:</span>
+                <span class="info-value">١٢:٥١:٥٩ م</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">رقم العملية:</span>
+                <span class="info-value">TXN-1757411519658</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">طريقة الدفع:</span>
+                <span class="info-value">نقدي</span>
+            </div>
+        </div>
+        
+        <div class="payment-summary">
+            <div class="summary-row">
+                <span>المبلغ المدفوع:</span>
+                <span>0 د.ع.</span>
+            </div>
+            <div class="summary-row">
+                <span>عدد الأصناف:</span>
+                <span>3</span>
+            </div>
+            <div class="summary-row">
+                <span>رقم الطاولة:</span>
+                <span>N/A</span>
+            </div>
+        </div>
+        
+        <div class="thank-you">شكراً لزيارتكم</div>
+        
+        <div class="footer">
+            <div class="footer-line">#Name?</div>
+            <div class="footer-line">#Name?</div>
+        </div>
+    </div>
+</body>
+</html>

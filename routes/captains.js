@@ -18,6 +18,7 @@ router.get("/", async (req, res) => {
       id: captain.CAPTAN_NO,
       name: captain.CAPTAN_NAME,
       captainNumber: captain.CAPTAN_NO,
+      // password: captain.PASSWORD,
     }));
 
     res.json({

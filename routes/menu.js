@@ -9,7 +9,7 @@ router.get("/categories", async (req, res) => {
       SELECT 
         CLASS_NO as category_id,
         CLASS_NAME as category_name
-      FROM CLASS 
+      FROM CLASSCODE WHERE CLASS_NAME IS NOT NULL
       ORDER BY CLASS_NO
     `;
 
@@ -42,7 +42,7 @@ router.get("/category/:categoryId/items", async (req, res) => {
   try {
     const { categoryId } = req.params;
     const [items2] = await executeQuery(`SELECT * FROM ITEM`);
-    console.log(items2);
+    
     const query = `
       SELECT 
         i.Item_no as item_id,

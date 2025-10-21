@@ -206,7 +206,7 @@ const insertSampleData = [
 // Initialize database
 function initializeDatabase() {
   return new Promise((resolve, reject) => {
-    console.log("🗄️ Initializing SQLite database...");
+    
 
     // Create tables
     let tablesCreated = 0;
@@ -219,10 +219,10 @@ function initializeDatabase() {
         }
 
         tablesCreated++;
-        console.log(`✅ Table ${index + 1} created`);
+        
 
         if (tablesCreated === createTables.length) {
-          console.log("✅ All tables created successfully");
+          
 
           // Insert sample data
           let dataInserted = 0;
@@ -235,12 +235,12 @@ function initializeDatabase() {
                 );
                 // Don't reject here, just log the error
               } else {
-                console.log(`✅ Sample data ${index + 1} inserted`);
+                
               }
 
               dataInserted++;
               if (dataInserted === insertSampleData.length) {
-                console.log("✅ Database initialization completed!");
+                
                 db.close();
                 resolve();
               }
@@ -259,7 +259,7 @@ module.exports = { initializeDatabase };
 if (require.main === module) {
   initializeDatabase()
     .then(() => {
-      console.log("🎉 Database ready for use!");
+      
       process.exit(0);
     })
     .catch((error) => {

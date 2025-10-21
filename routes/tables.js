@@ -1,7 +1,6 @@
 const express = require("express");
 const { executeQuery } = require("../config/database");
-const fs = require("fs");
-const path = require("path");
+// Removed fs and path imports - no longer needed
 const router = express.Router();
 
 // Get all tables in a specific area
@@ -17,66 +16,56 @@ router.get("/area/:areaId", async (req, res) => {
         fh.seq,
         h.HALL_NAME
       FROM FOOD_HALLS fh
-      JOIN HALLS h ON fh.seq = h.HALL_NO
+      JOIN HALLS h ON fh.seq = h.HALL_NO 
       WHERE fh.seq = ?
       ORDER BY fh.FOOD_TABLE_NO
     `;
 
     const tables = await executeQuery(tablesQuery, [areaId]);
 
-    // Check orders.json for pending orders
-    let pendingOrders = [];
-    try {
-      const ordersData = fs.readFileSync(path.join(__dirname, "orders.json"), "utf8");
-      const orders = JSON.parse(ordersData);
-      pendingOrders = orders.filter(order => 
-        order.status === "pending" && 
-        order.tableNumber && 
-        order.tableNumber !== ""
-      );
-    } catch (error) {
-      console.error("Error reading orders.json:", error);
-    }
+    // Removed orders.json dependency - using invoice-based workflow instead
 
-    // Create a map of booked tables from orders.json
-    const bookedTablesMap = {};
-    pendingOrders.forEach((order) => {
-      const tableNumber = parseInt(order.tableNumber);
-      if (tableNumber) {
-        bookedTablesMap[tableNumber] = {
-          fromDate: order.orderDate,
-          toDate: order.orderDate,
-          customerName: order.customerName || "Pending Order",
-          note: order.notes || "Pending order",
-          source: "orders.json",
-          orderNumber: order.orderNumber
-        };
-      }
+    // Determine color/status from INVOICE: green=new/empty, red=PAID=2&PRINTED=1, yellow=PAID=2&PRINTED=2
+    const colorQuery = `
+      WITH latest AS (
+        SELECT INV_FT_NO, PAID, PRINTED,
+               ROW_NUMBER() OVER (PARTITION BY INV_FT_NO ORDER BY INV_DATE DESC, inv_seq DESC) AS rn
+        FROM INVOICE
+        WHERE INV_FT_NO IS NOT NULL
+          AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
+      )
+      SELECT INV_FT_NO,
+             CASE 
+               WHEN PAID = 2 AND PRINTED = 2 THEN 'yellow'
+               WHEN PAID = 2 AND PRINTED = 1 THEN 'red'
+               ELSE 'green'
+             END AS color
+      FROM latest
+      WHERE rn = 1
+    `;
+    const colors = await executeQuery(colorQuery);
+    const colorMap = {};
+    colors.forEach(c => { 
+      const key = String(c.INV_FT_NO).trim();
+      colorMap[key] = c.color || "green";
     });
 
-    // Format tables with availability status
+    // Format tables with availability status and color
     const formattedTables = tables.map((table) => {
-      const isBooked = bookedTablesMap[table.FOOD_TABLE_NO];
+      const tableKey = String(table.FOOD_TABLE_NO).trim();
+      const color = colorMap[tableKey] || "green";
 
       return {
         id: table.NO,
         tableNumber: table.FOOD_TABLE_NO,
         areaId: table.seq,
         areaName: table.HALL_NAME,
-        status: isBooked ? "reserved" : "available",
+        status: "available",
+        color,
         availability: {
-          isAvailable: !isBooked,
-          isReserved: !!isBooked,
-          currentBooking: isBooked
-            ? {
-                fromDate: isBooked.fromDate,
-                toDate: isBooked.toDate,
-                customerName: isBooked.customerName,
-                note: isBooked.note,
-                source: isBooked.source,
-                orderNumber: isBooked.orderNumber
-              }
-            : null,
+          isAvailable: true,
+          isReserved: false,
+          currentBooking: null,
         },
       };
     });
@@ -87,9 +76,8 @@ router.get("/area/:areaId", async (req, res) => {
       tables: formattedTables,
       summary: {
         total: formattedTables.length,
-        available: formattedTables.filter((t) => t.status === "available")
-          .length,
-        reserved: formattedTables.filter((t) => t.status === "reserved").length,
+        available: formattedTables.length,
+        reserved: 0,
       },
     });
   } catch (error) {
@@ -102,8 +90,36 @@ router.get("/area/:areaId", async (req, res) => {
   }
 });
 
+// Grouped tables by halls using existing schema (HALLS + FOOD_HALLS)
+// GET /api/tables/groups
+// Response: { groups: [ { hall: 'صالة', tables: [1,2, ...] }, ... ] }
+router.get("/groups", async (_req, res) => {
+  try {
+    const query = `
+      SELECT h.HALL_NAME AS hallName, fh.FOOD_TABLE_NO AS tableNumber
+      FROM FOOD_HALLS fh
+      JOIN HALLS h ON fh.seq = h.HALL_NO
+      ORDER BY h.HALL_NAME, fh.FOOD_TABLE_NO
+    `;
+
+    const rows = await executeQuery(query);
+    const map = {};
+    rows.forEach(r => {
+      const hall = (r.hallName || '').trim();
+      const num = r.tableNumber;
+      if (!map[hall]) map[hall] = [];
+      map[hall].push(num);
+    });
+    const groups = Object.entries(map).map(([hall, tables]) => ({ hall, tables }));
+    res.json({ success: true, groups });
+  } catch (error) {
+    console.error('Error fetching table groups:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch table groups', error: error.message });
+  }
+});
+
 // Get specific table details
-router.get("/:tableId", async (req, res) => {
+router.get("/:tableId", async (req, res) => { 
   try {
     const { tableId } = req.params;
 
@@ -129,31 +145,7 @@ router.get("/:tableId", async (req, res) => {
 
     const table = tables[0];
 
-    // Check orders.json for pending orders for this table
-    let currentBooking = null;
-    try {
-      const ordersData = fs.readFileSync(path.join(__dirname, "orders.json"), "utf8");
-      const orders = JSON.parse(ordersData);
-      const pendingOrder = orders.find(order => 
-        order.status === "pending" && 
-        parseInt(order.tableNumber) === table.FOOD_TABLE_NO
-      );
-
-      if (pendingOrder) {
-        currentBooking = {
-          inv_seq: pendingOrder.orderNumber,
-          INV_DATE: pendingOrder.orderDate,
-          to_date: pendingOrder.orderDate,
-          PAID: 0,
-          CUSTOMER_NAME: pendingOrder.customerName || "Pending Order",
-          INV_NOTE: pendingOrder.notes || "Pending order",
-          COST: pendingOrder.totalAmount || 0,
-          source: "orders.json"
-        };
-      }
-    } catch (error) {
-      console.error("Error reading orders.json:", error);
-    }
+    // Removed orders.json dependency - using invoice-based workflow instead
 
     res.json({
       success: true,
@@ -162,23 +154,12 @@ router.get("/:tableId", async (req, res) => {
         tableNumber: table.FOOD_TABLE_NO,
         areaId: table.seq,
         areaName: table.HALL_NAME,
-        status: currentBooking ? "reserved" : "available",
-        currentBooking: currentBooking
-          ? {
-              bookingId: currentBooking.inv_seq,
-              fromDate: currentBooking.INV_DATE,
-              toDate: currentBooking.to_date,
-              customerName: currentBooking.CUSTOMER_NAME,
-              note: currentBooking.INV_NOTE,
-              bookingDate: currentBooking.INV_DATE,
-              cost: currentBooking.COST,
-              source: currentBooking.source
-            }
-          : null,
+        status: "available",
+        currentBooking: null,
       },
     });
   } catch (error) {
-    console.error("Error fetching table:", error);
+    console.error("Error fetching table:", error); 
     res.status(500).json({
       success: false,
       message: "Failed to fetch table",
@@ -216,31 +197,9 @@ router.get("/:tableId/availability", async (req, res) => {
 
     const tableNumber = tables[0].FOOD_TABLE_NO;
 
-    // Check orders.json for pending orders that might conflict
-    let orderConflicts = [];
-    try {
-      const ordersData = fs.readFileSync(path.join(__dirname, "orders.json"), "utf8");
-      const orders = JSON.parse(ordersData);
-      const pendingOrders = orders.filter(order => 
-        order.status === "pending" && 
-        parseInt(order.tableNumber) === tableNumber
-      );
-      
-      // Add pending orders as conflicts
-      pendingOrders.forEach(order => {
-        orderConflicts.push({
-          bookingId: order.orderNumber,
-          fromDate: order.orderDate,
-          toDate: order.orderDate,
-          customerName: order.customerName || "Pending Order",
-          source: "orders.json"
-        });
-      });
-    } catch (error) {
-      console.error("Error reading orders.json:", error);
-    }
-
-    const isAvailable = orderConflicts.length === 0;
+    // Removed orders.json dependency - using invoice-based workflow instead
+    const orderConflicts = [];
+    const isAvailable = true;
 
     res.json({
       success: true,
