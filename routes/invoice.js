@@ -8,7 +8,7 @@ const { exec } = require("child_process");
 const util = require("util");
 const execAsync = util.promisify(exec);
 const puppeteer = require("puppeteer");
-const {getPrintersUnicode, normalizeArabic} = require("../utils/getAllPrins");
+const { getPrintersUnicode, normalizeArabic } = require("../utils/getAllPrins");
 let printPdfLib;
 try {
   // Optional dependency: pdf-to-printer
@@ -17,12 +17,96 @@ try {
   printPdfLib = null;
 }
 
+// Helper function to get Chrome executable path for Puppeteer
+async function getChromeExecutablePath() {
+  // Try environment variable first
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    if (fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+      return process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+  }
 
+  // Try default Puppeteer cache path
+  const homeDir = os.homedir();
+  const defaultPath = path.join(homeDir, '.cache', 'puppeteer', 'chrome');
 
+  // Try to find the executable in the cache directory
+  if (fs.existsSync(defaultPath)) {
+    try {
+      const chromeFolders = fs.readdirSync(defaultPath);
+      if (chromeFolders.length > 0) {
+        // Get the latest version folder (sorted to get the highest version)
+        const folders = chromeFolders
+          .filter((f) => {
+            try {
+              return fs.statSync(path.join(defaultPath, f)).isDirectory();
+            } catch {
+              return false;
+            }
+          })
+          .sort()
+          .reverse(); // Reverse to get latest first
 
+        for (const folder of folders) {
+          if (process.platform === 'win32') {
+            const chromePath = path.join(
+              defaultPath,
+              folder,
+              'chrome-win64',
+              'chrome.exe'
+            );
+            if (fs.existsSync(chromePath)) {
+              return chromePath;
+            }
+          } else if (process.platform === 'linux') {
+            const chromePath = path.join(
+              defaultPath,
+              folder,
+              'chrome',
+              'chrome'
+            );
+            if (fs.existsSync(chromePath)) {
+              return chromePath;
+            }
+          } else if (process.platform === 'darwin') {
+            const chromePath = path.join(
+              defaultPath,
+              folder,
+              'chrome-mac-arm64',
+              'Google Chrome for Testing.app',
+              'Contents',
+              'MacOS',
+              'Google Chrome for Testing'
+            );
+            if (fs.existsSync(chromePath)) {
+              return chromePath;
+            }
+            // Try x64 version
+            const chromePathX64 = path.join(
+              defaultPath,
+              folder,
+              'chrome-mac-x64',
+              'Google Chrome for Testing.app',
+              'Contents',
+              'MacOS',
+              'Google Chrome for Testing'
+            );
+            if (fs.existsSync(chromePathX64)) {
+              return chromePathX64;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not find Chrome in default cache path:', e.message);
+    }
+  }
 
+  // Return undefined to let Puppeteer use its default (will download if needed or use system Chrome)
+  return undefined;
+}
 
-// Helper: compute next NUM1 for today 
+// Helper: compute next NUM1 for today
 async function getNextDailyNum1() {
   const query = `
     SELECT ISNULL(MAX(NUM1), 0) + 1 AS nextNum 
@@ -36,29 +120,33 @@ async function getNextDailyNum1() {
 // Open a new table: create invoice with daily NUM1 and optional captain
 router.post("/open", async (req, res) => {
   try {
-    const { tableNumber, captainNo, captainName, note, menuType } = req.body;
+    const { tableNumber, captainNo, captainName, note, menuType, INV_HALL_NO } =
+      req.body;
 
     if (!tableNumber) {
-      return res.status(400).json({ success: false, message: "tableNumber is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "tableNumber is required" });
     }
 
     const nextNum1 = await getNextDailyNum1();
 
     const insertQuery = `
       INSERT INTO INVOICE (
-        INV_FT_NO, INV_DATE, NUM1, INV_CAPTAIN_NO, INV_CASH_NAME, INV_NOTE, MENU_TYPE, PAID, PRINTED, LOCK
+       INV_HALL_NO, INV_FT_NO, INV_DATE, NUM1, INV_CAPTAIN_NO, INV_CASH_NAME, INV_NOTE, MENU_TYPE, PAID, PRINTED, LOCK, TYPE, D_C
       )
       OUTPUT Inserted.inv_seq AS inv_seq
-      VALUES (?, GETDATE(), ?, ?, ?, ?, ?, 0, 0, 0)
+      VALUES (?, ?, GETDATE(), ?, ?, ?, ?, ?, 2, 1, 0, 2, GETDATE())
     `;
 
     const values = [
+      INV_HALL_NO,
       tableNumber,
       nextNum1,
-      captainNo || 0,
-      captainName || "",
-      note || "",
-      menuType || null,
+      null,
+      "كاشير",
+      null,
+      menuType || null
     ];
 
     const inserted = await executeQuery(insertQuery, values);
@@ -67,7 +155,10 @@ router.post("/open", async (req, res) => {
     // Optionally persist captain name if provided (store to a text field INV_CASH_NAME to keep a display copy)
     // Optional post-update in case UI changes captain name later
     if (captainName && invSeq) {
-      await executeQuery(`UPDATE INVOICE SET INV_CASH_NAME = ? WHERE inv_seq = ?`, [captainName, invSeq]);
+      await executeQuery(
+        `UPDATE INVOICE SET INV_CASH_NAME = ? WHERE inv_seq = ?`,
+        [captainName, invSeq]
+      );
     }
 
     res.status(201).json({
@@ -78,12 +169,16 @@ router.post("/open", async (req, res) => {
         tableNumber,
         num1: nextNum1,
         captainNo: captainNo || null,
-        captainName: captainName || null,
-      },
+        captainName: captainName || null
+      }
     });
   } catch (error) {
     console.error("Error opening table:", error);
-    res.status(500).json({ success: false, message: "Failed to open table", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to open table",
+      error: error.message
+    });
   }
 });
 
@@ -93,7 +188,9 @@ router.post("/:invSeq/captain", async (req, res) => {
     const { invSeq } = req.params;
     const { captainNo, captainName } = req.body;
     if (!captainNo && !captainName) {
-      return res.status(400).json({ success: false, message: "captainNo or captainName required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "captainNo or captainName required" });
     }
 
     // Only update captain information; do NOT delete items or change PAID here
@@ -105,10 +202,17 @@ router.post("/:invSeq/captain", async (req, res) => {
       [captainNo || null, captainName || null, invSeq]
     );
 
-    res.json({ success: true, message: "Captain assigned/updated successfully" });
+    res.json({
+      success: true,
+      message: "Captain assigned/updated successfully"
+    });
   } catch (error) {
     console.error("Error assigning captain:", error);
-    res.status(500).json({ success: false, message: "Failed to assign captain", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to assign captain",
+      error: error.message
+    });
   }
 });
 
@@ -121,25 +225,38 @@ router.post("/:invSeq/print", async (req, res) => {
     const { invSeq } = req.params;
     const { printType } = req.body;
 
-    const [invoice] = await executeQuery(`SELECT inv_seq, PAID, PRINTED, LOCK FROM INVOICE WHERE inv_seq = ?`, [invSeq]);
+    const [invoice] = await executeQuery(
+      `SELECT inv_seq, PAID, PRINTED, LOCK FROM INVOICE WHERE inv_seq = ?`,
+      [invSeq]
+    );
     if (!invoice) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
 
     // Execute b1 first (if exists)
     try {
       await executeStoredProcedure("b1", { inv_seq: invSeq });
     } catch (e) {
-      console.warn("Warning: SP b1 not found or failed, continuing...", e.message);
+      console.warn(
+        "Warning: SP b1 not found or failed, continuing...",
+        e.message
+      );
     }
 
     // If already paid, do nothing per spec
     if (invoice.PAID === 1) {
-      return res.json({ success: true, message: "Already paid; no action taken" });
+      return res.json({
+        success: true,
+        message: "Already paid; no action taken"
+      });
     }
 
     // Lock the invoice to avoid re-print
-    await executeQuery(`UPDATE INVOICE SET LOCK = 1 WHERE inv_seq = ?`, [invSeq]);
+    await executeQuery(`UPDATE INVOICE SET LOCK = 1 WHERE inv_seq = ?`, [
+      invSeq
+    ]);
 
     // Execute group SPs 1_Q .. 14_Q (if they exist)
     const groupProcedures = Array.from({ length: 14 }, (_, i) => `${i + 1}_Q`);
@@ -152,31 +269,56 @@ router.post("/:invSeq/print", async (req, res) => {
     }
 
     // Execute fol reports
-    try { await executeStoredProcedure("Test_fol", { inv_seq: invSeq }); } catch (e) { console.warn("Test_fol failed", e.message); }
-    try { await executeStoredProcedure("TEST_FOL1", { inv_seq: invSeq }); } catch (e) { console.warn("TEST_FOL1 failed", e.message); }
+    try {
+      await executeStoredProcedure("Test_fol", { inv_seq: invSeq });
+    } catch (e) {
+      console.warn("Test_fol failed", e.message);
+    }
+    try {
+      await executeStoredProcedure("TEST_FOL1", { inv_seq: invSeq });
+    } catch (e) {
+      console.warn("TEST_FOL1 failed", e.message);
+    }
 
     // Customer bill report on 'cash' printer (handled inside report)
     if (printType === "bill") {
-      try { await executeStoredProcedure("NEW_FATOR", { inv_seq: invSeq }); } catch (e) { console.warn("NEW_FATOR failed", e.message); }
+      try {
+        await executeStoredProcedure("NEW_FATOR", { inv_seq: invSeq });
+      } catch (e) {
+        console.warn("NEW_FATOR failed", e.message);
+      }
     }
 
     // Finalize with P11
-    try { await executeStoredProcedure("P11", { inv_seq: invSeq }); } catch (e) { console.warn("P11 failed", e.message); }
+    try {
+      await executeStoredProcedure("P11", { inv_seq: invSeq });
+    } catch (e) {
+      console.warn("P11 failed", e.message);
+    }
 
     // Update status fields according to print type
     if (printType === "kitchen") {
-      await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 1 WHERE inv_seq = ?`, [invSeq]);
+      await executeQuery(
+        `UPDATE INVOICE SET PAID = 2, PRINTED = 1 WHERE inv_seq = ?`,
+        [invSeq]
+      );
     } else if (printType === "bill") {
-      await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`, [invSeq]);
+      await executeQuery(
+        `UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`,
+        [invSeq]
+      );
     }
 
     res.json({ success: true, message: "Print procedures executed", lock: 1 });
   } catch (error) {
     console.error("Error printing invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to execute print flow", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to execute print flow",
+      error: error.message
+    });
   }
 });
-
 
 // Delete an item from INVOICE_MENU with LOCK/PP rules
 // Note: If stored procedures don't exist, the endpoint will still delete the item
@@ -185,45 +327,91 @@ router.delete("/:invSeq/items/:autoSeq", async (req, res) => {
   try {
     const { invSeq, autoSeq } = req.params;
 
-    const [inv] = await executeQuery(`SELECT LOCK FROM INVOICE WHERE inv_seq = ?`, [invSeq]);
+    const [inv] = await executeQuery(
+      `SELECT LOCK FROM INVOICE WHERE inv_seq = ?`,
+      [invSeq]
+    );
     if (!inv) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
     if (inv.LOCK === 1) {
-      return res.status(403).json({ success: false, message: "Locked invoice; deletion not allowed" });
+      return res.status(403).json({
+        success: false,
+        message: "Locked invoice; deletion not allowed"
+      });
     }
 
     // Execute A1 first (inventory system hook) - if it exists
-    try { await executeStoredProcedure("A1", { inv_seq: invSeq, auto_seq: autoSeq }); } catch (e) { console.warn("A1 SP not found or failed:", e.message); }
+    try {
+      await executeStoredProcedure("A1", {
+        inv_seq: invSeq,
+        auto_seq: autoSeq
+      });
+    } catch (e) {
+      console.warn("A1 SP not found or failed:", e.message);
+    }
 
-    const [item] = await executeQuery(`SELECT TOP 1 * FROM INVOICE_MENU WHERE auto_seq = ? AND INV_SEQ = ?`, [autoSeq, invSeq]);
+    const [item] = await executeQuery(
+      `SELECT TOP 1 * FROM INVOICE_MENU WHERE auto_seq = ? AND INV_SEQ = ?`,
+      [autoSeq, invSeq]
+    );
     if (!item) {
-      return res.status(404).json({ success: false, message: "Item not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found" });
     }
 
     // Rule: if lock = 1 AND PP = 1 => do nothing
     if (inv.LOCK === 1 && item.PP === 1) {
-      return res.status(403).json({ success: false, message: "Locked and printed item; deletion not allowed" });
+      return res.status(403).json({
+        success: false,
+        message: "Locked and printed item; deletion not allowed"
+      });
     }
 
     // Backup and stock corrections
     const runBackAndDel = async () => {
-      try { await executeStoredProcedure("t00_BACK", { inv_seq: invSeq, auto_seq: autoSeq }); } catch (e) { console.warn("t00_BACK SP not found or failed:", e.message); }
-      try { await executeStoredProcedure("b00", { inv_seq: invSeq, auto_seq: autoSeq }); } catch (e) { console.warn("b00 SP not found or failed:", e.message); }
+      try {
+        await executeStoredProcedure("t00_BACK", {
+          inv_seq: invSeq,
+          auto_seq: autoSeq
+        });
+      } catch (e) {
+        console.warn("t00_BACK SP not found or failed:", e.message);
+      }
+      try {
+        await executeStoredProcedure("b00", {
+          inv_seq: invSeq,
+          auto_seq: autoSeq
+        });
+      } catch (e) {
+        console.warn("b00 SP not found or failed:", e.message);
+      }
 
       // Send deleted values to INVOICE_MENU_BACK
       try {
         await executeQuery(
           `INSERT INTO INVOICE_MENU_BACK (INV_SEQ, ITEM_NO, QTY, P, C, pp, NOTICE, THE_DATE, INV_FT_NO, NUM1, perc)
-           SELECT i.INV_SEQ, i.ITEM_NO, i.QTY, i.P, CAST(i.PRICE AS varchar), i.PP, i.notice, GETDATE(), inv.INV_FT_NO, inv.NUM1, i.PER
+           SELECT i.INV_SEQ, i.ITEM_NO, i.QTY, i.P, CAST(i.P AS varchar), i.PP, i.notice, GETDATE(), inv.INV_FT_NO, inv.NUM1, i.PER
            FROM INVOICE_MENU i
            JOIN INVOICE inv ON inv.inv_seq = i.INV_SEQ
            WHERE i.auto_seq = ? AND i.INV_SEQ = ?`,
           [autoSeq, invSeq]
         );
-      } catch (e) { console.warn("Insert into INVOICE_MENU_BACK failed", e.message); }
+      } catch (e) {
+        console.warn("Insert into INVOICE_MENU_BACK failed", e.message);
+      }
 
-      try { await executeStoredProcedure("DEL_WIN10", { inv_seq: invSeq, auto_seq: autoSeq }); } catch (e) { console.warn("DEL_WIN10 SP not found or failed:", e.message); }
+      try {
+        await executeStoredProcedure("DEL_WIN10", {
+          inv_seq: invSeq,
+          auto_seq: autoSeq
+        });
+      } catch (e) {
+        console.warn("DEL_WIN10 SP not found or failed:", e.message);
+      }
     };
 
     // If item was printed and invoice not locked, optional confirmation should be handled client-side
@@ -231,18 +419,36 @@ router.delete("/:invSeq/items/:autoSeq", async (req, res) => {
     await runBackAndDel();
 
     // Append deleted items snapshot (for audit) - if SP exists
-    try { await executeStoredProcedure("APPEND_DELETED_ITEMS", { inv_seq: invSeq, auto_seq: autoSeq }); } catch (e) { console.warn("APPEND_DELETED_ITEMS SP not found or failed:", e.message); }
+    try {
+      await executeStoredProcedure("APPEND_DELETED_ITEMS", {
+        inv_seq: invSeq,
+        auto_seq: autoSeq
+      });
+    } catch (e) {
+      console.warn("APPEND_DELETED_ITEMS SP not found or failed:", e.message);
+    }
 
     // Finally, remove the item from INVOICE_MENU
-    await executeQuery(`DELETE FROM INVOICE_MENU WHERE auto_seq = ? AND INV_SEQ = ?`, [autoSeq, invSeq]);
+    await executeQuery(
+      `DELETE FROM INVOICE_MENU WHERE auto_seq = ? AND INV_SEQ = ?`,
+      [autoSeq, invSeq]
+    );
 
     // Print deletion notice to kitchen via d_1 - if SP exists
-    try { await executeStoredProcedure("d_1", { inv_seq: invSeq }); } catch (e) { console.warn("d_1 SP not found or failed:", e.message); }
+    try {
+      await executeStoredProcedure("d_1", { inv_seq: invSeq });
+    } catch (e) {
+      console.warn("d_1 SP not found or failed:", e.message);
+    }
 
     res.json({ success: true, message: "Item deleted and inventory updated" });
   } catch (error) {
     console.error("Error deleting invoice item:", error);
-    res.status(500).json({ success: false, message: "Failed to delete item", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete item",
+      error: error.message
+    });
   }
 });
 
@@ -254,19 +460,29 @@ router.post("/:invSeq/check-paid", async (req, res) => {
 
     // Try to execute the stored procedure if it exists
     try {
-      const result = await executeStoredProcedure("check_paid", { inv_seq: invSeq });
+      const result = await executeStoredProcedure("check_paid", {
+        inv_seq: invSeq
+      });
       res.json({ success: true, result, source: "stored_procedure" });
     } catch (spError) {
-      console.warn("Warning: check_paid SP not found, returning basic invoice status:", spError.message);
+      console.warn(
+        "Warning: check_paid SP not found, returning basic invoice status:",
+        spError.message
+      );
 
       // Fallback: return basic invoice status from database
-      const [invoice] = await executeQuery(`
+      const [invoice] = await executeQuery(
+        `
         SELECT inv_seq, PAID, PRINTED, LOCK, INV_FT_NO, NUM1, INV_DATE, INV_CASH_NAME
         FROM INVOICE WHERE inv_seq = ?
-      `, [invSeq]);
+      `,
+        [invSeq]
+      );
 
       if (!invoice) {
-        return res.status(404).json({ success: false, message: "Invoice not found" });
+        return res
+          .status(404)
+          .json({ success: false, message: "Invoice not found" });
       }
 
       res.json({
@@ -283,14 +499,23 @@ router.post("/:invSeq/check-paid", async (req, res) => {
             printed: invoice.PRINTED,
             locked: invoice.LOCK
           },
-          table_color: invoice.PRINTED === 2 ? "yellow" : (invoice.PRINTED === 1 ? "red" : "green")
+          table_color:
+            invoice.PRINTED == 2
+              ? "yellow"
+              : invoice.PRINTED == 1
+              ? "red"
+              : "green"
         },
         source: "database_fallback"
       });
     }
   } catch (error) {
     console.error("Error in check-paid endpoint:", error);
-    res.status(500).json({ success: false, message: "Failed to check invoice status", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to check invoice status",
+      error: error.message
+    });
   }
 });
 
@@ -299,18 +524,32 @@ router.post("/:invSeq/check-paid", async (req, res) => {
 router.post("/:invSeq/pay", async (req, res) => {
   try {
     const { invSeq } = req.params;
-    const rows = await executeQuery(`SELECT inv_seq FROM INVOICE WHERE inv_seq = ?`, [invSeq]);
+    const rows = await executeQuery(
+      `SELECT inv_seq FROM INVOICE WHERE inv_seq = ?`,
+      [invSeq]
+    );
     if (!rows.length) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
 
-    await executeQuery(`UPDATE INVOICE SET PAID = 1 WHERE inv_seq = ?`, [invSeq]);
+    await executeQuery(`UPDATE INVOICE SET PAID = 1 WHERE inv_seq = ?`, [
+      invSeq
+    ]);
     await executeQuery(`DELETE FROM INVOICE_MENU WHERE INV_SEQ = ?`, [invSeq]);
 
-    res.json({ success: true, message: "Invoice settled (PAID=1). Table will show green." });
+    res.json({
+      success: true,
+      message: "Invoice settled (PAID=1). Table will show green."
+    });
   } catch (error) {
     console.error("Error settling invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to settle invoice", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to settle invoice",
+      error: error.message
+    });
   }
 });
 
@@ -320,7 +559,11 @@ router.get("/today/next-num1", async (_req, res) => {
     const nextNum1 = await getNextDailyNum1();
     res.json({ success: true, nextNum1 });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to compute next NUM1", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to compute next NUM1",
+      error: error.message
+    });
   }
 });
 
@@ -332,11 +575,26 @@ router.get("/", async (req, res) => {
     const where = [];
     const params = [];
 
-    if (from) { where.push("INV_DATE >= ?"); params.push(from); }
-    if (to) { where.push("INV_DATE < DATEADD(day, 1, ?)"); params.push(to); }
-    if (tableNumber) { where.push("INV_FT_NO = ?"); params.push(tableNumber); }
-    if (paid !== undefined) { where.push("PAID = ?"); params.push(paid); }
-    if (printed !== undefined) { where.push("PRINTED = ?"); params.push(printed); }
+    if (from) {
+      where.push("INV_DATE >= ?");
+      params.push(from);
+    }
+    if (to) {
+      where.push("INV_DATE < DATEADD(day, 1, ?)");
+      params.push(to);
+    }
+    if (tableNumber) {
+      where.push("INV_FT_NO = ?");
+      params.push(tableNumber);
+    }
+    if (paid !== undefined) {
+      where.push("PAID = ?");
+      params.push(paid);
+    }
+    if (printed !== undefined) {
+      where.push("PRINTED = ?");
+      params.push(printed);
+    }
 
     const query = `
 			SELECT inv_seq, NUM1, INV_DATE, INV_FT_NO, INV_CAPTAIN_NO, INV_CASH_NAME,
@@ -348,15 +606,25 @@ router.get("/", async (req, res) => {
 
     const invoices = await executeQuery(query, params);
     if (invoices.length === 0) {
-      return res.json({ success: true, invoices: [], total: 0, summary: { totalAmount: 0, totalPaidAmount: 0, totalUnpaidAmount: 0, totalPrintedUnsettledAmount: 0 } });
+      return res.json({
+        success: true,
+        invoices: [],
+        total: 0,
+        summary: {
+          totalAmount: 0,
+          totalPaidAmount: 0,
+          totalUnpaidAmount: 0,
+          totalPrintedUnsettledAmount: 0
+        }
+      });
     }
 
     // Fetch items for all invoices and include item names
-    const invSeqs = invoices.map(r => r.inv_seq);
+    const invSeqs = invoices.map((r) => r.inv_seq);
     const placeholders = invSeqs.map(() => '?').join(', ');
     const itemsQuery = `
-			SELECT i.INV_SEQ, i.auto_seq, i.ITEM_NO, it.Item_name AS item_name, i.QTY, i.PRICE, i.notice, i.PP,
-			       (CAST(i.QTY AS float) * CAST(i.PRICE AS float)) AS line_total
+			SELECT i.INV_SEQ, i.auto_seq, i.ITEM_NO, it.Item_name AS item_name, i.QTY, i.P AS PRICE, i.notice, i.PP,
+			       (CAST(i.QTY AS float) * CAST(i.P AS float)) AS line_total
 			FROM INVOICE_MENU i
 			LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(i.ITEM_NO AS varchar(50))
 			WHERE i.INV_SEQ IN (${placeholders})
@@ -383,7 +651,7 @@ router.get("/", async (req, res) => {
       totalsByInvoice[key] = (totalsByInvoice[key] || 0) + lineTotal;
     }
 
-    const enriched = invoices.map(inv => ({
+    const enriched = invoices.map((inv) => ({
       ...inv,
       captain: inv.INV_CASH_NAME,
       items: itemsByInvoice[inv.inv_seq] || [],
@@ -391,15 +659,36 @@ router.get("/", async (req, res) => {
     }));
 
     // Summary totals
-    const totalAmount = enriched.reduce((s, r) => s + (Number(r.invoiceTotal) || 0), 0);
-    const totalPaidAmount = enriched.filter(r => r.PAID === 1).reduce((s, r) => s + (Number(r.invoiceTotal) || 0), 0);
-    const totalPrintedUnsettledAmount = enriched.filter(r => r.PAID === 2).reduce((s, r) => s + (Number(r.invoiceTotal) || 0), 0);
+    const totalAmount = enriched.reduce(
+      (s, r) => s + (Number(r.invoiceTotal) || 0),
+      0
+    );
+    const totalPaidAmount = enriched
+      .filter((r) => r.PAID === 1)
+      .reduce((s, r) => s + (Number(r.invoiceTotal) || 0), 0);
+    const totalPrintedUnsettledAmount = enriched
+      .filter((r) => r.PAID === 2)
+      .reduce((s, r) => s + (Number(r.invoiceTotal) || 0), 0);
     const totalUnpaidAmount = totalAmount - totalPaidAmount;
 
-    res.json({ success: true, invoices: enriched, total: enriched.length, summary: { totalAmount, totalPaidAmount, totalUnpaidAmount, totalPrintedUnsettledAmount } });
+    res.json({
+      success: true,
+      invoices: enriched,
+      total: enriched.length,
+      summary: {
+        totalAmount,
+        totalPaidAmount,
+        totalUnpaidAmount,
+        totalPrintedUnsettledAmount
+      }
+    });
   } catch (error) {
     console.error("Error listing invoices:", error);
-    res.status(500).json({ success: false, message: "Failed to list invoices", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to list invoices",
+      error: error.message
+    });
   }
 });
 
@@ -414,7 +703,9 @@ router.get("/:invSeq", async (req, res) => {
       [invSeq]
     );
     if (!invRows.length) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
     const items = await executeQuery(
       `SELECT auto_seq, INV_SEQ, ITEM_NO, QTY, P, F_PRICE, S_PRICE, PRICE, notice, PP
@@ -424,7 +715,11 @@ router.get("/:invSeq", async (req, res) => {
     res.json({ success: true, invoice: invRows[0], items });
   } catch (error) {
     console.error("Error fetching invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch invoice", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch invoice",
+      error: error.message
+    });
   }
 });
 
@@ -442,7 +737,7 @@ router.get("/test-sps", async (_req, res) => {
     res.json({
       success: true,
       message: "Available stored procedures",
-      storedProcedures: sps.map(sp => sp.ROUTINE_NAME),
+      storedProcedures: sps.map((sp) => sp.ROUTINE_NAME),
       total: sps.length
     });
   } catch (error) {
@@ -483,14 +778,16 @@ router.get("/table/:tableNumber", async (req, res) => {
         FROM INVOICE
         WHERE INV_FT_NO IS NOT NULL
           AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
-      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1
+      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1 AND i.PAID = 2
       WHERE tt.Tb_no = ?
     `;
 
     const tables = await executeQuery(tableQuery, [tableNumber]);
 
     if (tables.length === 0) {
-      return res.status(404).json({ success: false, message: "Table not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Table not found" });
     }
 
     const table = tables[0];
@@ -506,10 +803,10 @@ router.get("/table/:tableNumber", async (req, res) => {
           im.ITEM_NO,
           it.Item_name AS item_name,
           im.QTY,
-          im.PRICE,
+          im.P AS PRICE,
           im.notice,
           im.PP,
-          (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+          (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
         FROM INVOICE_MENU im
         LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
         WHERE im.INV_SEQ = ?
@@ -517,9 +814,12 @@ router.get("/table/:tableNumber", async (req, res) => {
       `;
 
       items = await executeQuery(itemsQuery, [table.inv_seq]);
-      invoiceTotal = items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
+      invoiceTotal = items.reduce(
+        (sum, item) => sum + (Number(item.line_total) || 0),
+        0
+      );
 
-      items = items.map(item => ({
+      items = items.map((item) => ({
         auto_seq: item.auto_seq,
         itemNo: item.ITEM_NO,
         itemName: item.item_name || null,
@@ -543,9 +843,11 @@ router.get("/table/:tableNumber", async (req, res) => {
 
     // If table is not green (i.e., has printed states), build details from check_paid stored procedure if available
     let checkPaid = null;
-    if (table.inv_seq && color !== "green") {
+    if (table.inv_seq && color != "green") {
       try {
-        checkPaid = await executeStoredProcedure("check_paid", { inv_seq: table.inv_seq });
+        checkPaid = await executeStoredProcedure("check_paid", {
+          inv_seq: table.inv_seq
+        });
       } catch (e) {
         console.warn("check_paid SP failed or missing:", e.message);
       }
@@ -560,28 +862,37 @@ router.get("/table/:tableNumber", async (req, res) => {
         areaName: table.areaName,
         status: table.inv_seq ? "occupied" : "available",
         color,
-        captain: table.inv_seq ? {
-          captainNo: table?.INV_CAPTAIN_NO,
-          captainName: table.INV_CASH_NAME || table.CAPTAIN_NAME,
-          displayName: table.INV_CASH_NAME || table.CAPTAIN_NAME || "غير محدد"
-        } : null,
-        invoice: table.inv_seq ? {
-          inv_seq: table.inv_seq,
-          num1: table.NUM1,
-          date: table.INV_DATE,
-          paid: table.PAID,
-          printed: table.PRINTED,
-          locked: table.LOCK,
-          note: table.INV_NOTE,
-          total: invoiceTotal,
-          items: items,
-          check_paid: checkPaid
-        } : null
+        captain: table.inv_seq
+          ? {
+              captainNo: table?.INV_CAPTAIN_NO,
+              captainName: table.INV_CASH_NAME || table.CAPTAIN_NAME,
+              displayName:
+                table.INV_CASH_NAME || table.CAPTAIN_NAME || "غير محدد"
+            }
+          : null,
+        invoice: table.inv_seq
+          ? {
+              inv_seq: table.inv_seq,
+              num1: table.NUM1,
+              date: table.INV_DATE,
+              paid: table.PAID,
+              printed: table.PRINTED,
+              locked: table.LOCK,
+              note: table.INV_NOTE,
+              total: invoiceTotal,
+              items: items,
+              check_paid: checkPaid
+            }
+          : null
       }
     });
   } catch (error) {
     console.error("Error fetching table info:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch table info", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch table info",
+      error: error.message
+    });
   }
 });
 
@@ -592,18 +903,23 @@ router.post("/table/:tableNumber/clear", async (req, res) => {
     const { tableNumber } = req.params;
 
     // Get the current invoice for this table
-    const [currentInvoice] = await executeQuery(`
+    const [currentInvoice] = await executeQuery(
+      `
       SELECT inv_seq, PAID, PRINTED, LOCK 
       FROM INVOICE 
       WHERE INV_FT_NO = ? 
         AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
       ORDER BY inv_seq DESC
-    `, [tableNumber]);
+    `,
+      [tableNumber]
+    );
 
     if (currentInvoice) {
       // If invoice exists and is not paid, mark it as paid to make table available
       if (currentInvoice.PAID !== 1) {
-        await executeQuery(`UPDATE INVOICE SET PAID = 1 WHERE inv_seq = ?`, [currentInvoice.inv_seq]);
+        await executeQuery(`UPDATE INVOICE SET PAID = 1 WHERE inv_seq = ?`, [
+          currentInvoice.inv_seq
+        ]);
       }
     }
 
@@ -614,7 +930,11 @@ router.post("/table/:tableNumber/clear", async (req, res) => {
     });
   } catch (error) {
     console.error("Error clearing table:", error);
-    res.status(500).json({ success: false, message: "Failed to clear table", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to clear table",
+      error: error.message
+    });
   }
 });
 
@@ -624,9 +944,14 @@ router.post("/:invSeq/lock-and-clear", async (req, res) => {
   try {
     const { invSeq } = req.params;
     // Read current invoice status first
-    const rows = await executeQuery(`SELECT inv_seq, PRINTED FROM INVOICE WHERE inv_seq = ?`, [invSeq]);
+    const rows = await executeQuery(
+      `SELECT inv_seq, PRINTED FROM INVOICE WHERE inv_seq = ?`,
+      [invSeq]
+    );
     if (!rows.length) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
     const printedStatus = Number(rows[0]?.PRINTED ?? 0);
 
@@ -649,22 +974,37 @@ router.post("/:invSeq/lock-and-clear", async (req, res) => {
           );
         }
       } catch (stockErr) {
-        console.warn("Failed to return stock to ITEM balance during lock-and-clear:", stockErr?.message);
+        console.warn(
+          "Failed to return stock to ITEM balance during lock-and-clear:",
+          stockErr?.message
+        );
       }
     }
 
     // Reset invoice flags prior to deletion for consistency
-    try { await executeQuery(`UPDATE INVOICE SET PAID = 0, PRINTED = 0 WHERE inv_seq = ?`, [invSeq]); } catch {}
+    try {
+      await executeQuery(
+        `UPDATE INVOICE SET PAID = 0, PRINTED = 0 WHERE inv_seq = ?`,
+        [invSeq]
+      );
+    } catch {}
 
     // Delete items
     await executeQuery(`DELETE FROM INVOICE_MENU WHERE INV_SEQ = ?`, [invSeq]);
     // Clear captain and mark paid
     await executeQuery(`DELETE FROM INVOICE WHERE inv_seq = ?`, [invSeq]);
 
-    return res.json({ success: true, message: "Invoice locked and cleared (items and captain removed)" });
+    return res.json({
+      success: true,
+      message: "Invoice locked and cleared (items and captain removed)"
+    });
   } catch (error) {
     console.error("Error lock-and-clear invoice:", error);
-    return res.status(500).json({ success: false, message: "Failed to lock and clear invoice", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to lock and clear invoice",
+      error: error.message
+    });
   }
 });
 
@@ -673,14 +1013,22 @@ module.exports = router;
 // Ensure a temp print directory that won't trigger frontend HMR reloads
 const PRINT_DIR = path.join(os.tmpdir(), "elmezan_print");
 if (!fs.existsSync(PRINT_DIR)) {
-  try { fs.mkdirSync(PRINT_DIR, { recursive: true }); } catch { }
+  try {
+    fs.mkdirSync(PRINT_DIR, { recursive: true });
+  } catch {}
 }
 
 // === Print invoice as TEXT using PowerShell ===
 // POST /api/invoice/:invSeq/print-text { printerName? }
 const TEXT_WIDTH = 42;
-const padRight = (t = "", w = TEXT_WIDTH) => (String(t).length >= w ? String(t).slice(0, w) : String(t) + " ".repeat(w - String(t).length));
-const padLeft = (t = "", w = TEXT_WIDTH) => (String(t).length >= w ? String(t).slice(-w) : " ".repeat(w - String(t).length) + String(t));
+const padRight = (t = "", w = TEXT_WIDTH) =>
+  String(t).length >= w
+    ? String(t).slice(0, w)
+    : String(t) + " ".repeat(w - String(t).length);
+const padLeft = (t = "", w = TEXT_WIDTH) =>
+  String(t).length >= w
+    ? String(t).slice(-w)
+    : " ".repeat(w - String(t).length) + String(t);
 const center = (t = "", w = TEXT_WIDTH) => {
   const s = String(t);
   if (s.length >= w) return s.slice(0, w);
@@ -694,11 +1042,14 @@ function formatInvoiceTextServer(invoice, items) {
   const dateStr = date.toLocaleDateString("ar-SA");
   const timeStr = date.toLocaleTimeString("ar-SA");
 
-  const header = [center("الميزان", TEXT_WIDTH), center(line(), TEXT_WIDTH)].join("\n");
+  const header = [
+    center("الميزان", TEXT_WIDTH),
+    center(line(), TEXT_WIDTH)
+  ].join("\n");
   const topInfo = [
     padRight(`القائمة ${invoice.NUM1 ?? ""}`, TEXT_WIDTH),
     padRight(`تاريخ ${dateStr}`.padStart(TEXT_WIDTH / 2), TEXT_WIDTH),
-    padRight(`الوقت ${timeStr}`.padStart(TEXT_WIDTH / 2), TEXT_WIDTH),
+    padRight(`الوقت ${timeStr}`.padStart(TEXT_WIDTH / 2), TEXT_WIDTH)
   ].join("\n");
 
   const tableBox = (() => {
@@ -714,7 +1065,9 @@ function formatInvoiceTextServer(invoice, items) {
   const columnsHeader = (() => {
     const qtyW = 6;
     const nameW = TEXT_WIDTH - qtyW - 2;
-    return padLeft("العدد", qtyW) + "  " + padLeft("المادة".padStart(nameW), nameW);
+    return (
+      padLeft("العدد", qtyW) + "  " + padLeft("المادة".padStart(nameW), nameW)
+    );
   })();
 
   const itemLines = items.map((it) => {
@@ -727,7 +1080,10 @@ function formatInvoiceTextServer(invoice, items) {
 
   const body = [line(), columnsHeader, line(), ...itemLines, line()].join("\n");
   const total = items.reduce((s, it) => s + Number(it.line_total || 0), 0);
-  const footer = [padRight(`الملاحظات: ${invoice.INV_NOTE || ""}`, TEXT_WIDTH), center(line(), TEXT_WIDTH)].join("\n");
+  const footer = [
+    padRight(`الملاحظات: ${invoice.INV_NOTE || ""}`, TEXT_WIDTH),
+    center(line(), TEXT_WIDTH)
+  ].join("\n");
 
   return [
     header,
@@ -736,7 +1092,7 @@ function formatInvoiceTextServer(invoice, items) {
     padLeft("", TEXT_WIDTH),
     body,
     padLeft(`المجموع: ${Number(total).toFixed(0)}`, TEXT_WIDTH),
-    footer,
+    footer
   ].join("\n");
 }
 
@@ -751,11 +1107,13 @@ router.post("/:invSeq/print-text", async (req, res) => {
       [invSeq]
     );
     if (!inv) {
-      return res.status(404).json({ success: false, message: "Invoice not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
     }
     const items = await executeQuery(
-      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.PRICE,
-              (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.P AS PRICE,
+              (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
        FROM INVOICE_MENU im
        LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
        WHERE im.INV_SEQ = ?
@@ -782,13 +1140,26 @@ router.post("/:invSeq/print-text", async (req, res) => {
       }
     } else {
       const args = printerName ? [`-d`, printerName, filePath] : [filePath];
-      await execAsync(`lp ${args.map((a) => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ")}`);
+      await execAsync(
+        `lp ${args
+          .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
+          .join(" ")}`
+      );
     }
 
-    return res.json({ success: true, message: "Text printed", filePath, printer: printerName || "default" });
+    return res.json({
+      success: true,
+      message: "Text printed",
+      filePath,
+      printer: printerName || "default"
+    });
   } catch (error) {
     console.error("print-text error:", error);
-    return res.status(500).json({ success: false, message: "Failed to print text", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to print text",
+      error: error.message
+    });
   }
 });
 
@@ -803,16 +1174,18 @@ router.post("/:invSeq/print-html", async (req, res) => {
       .trim();
 
   const safeForFile = (s = "") =>
-    String(s).replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "cat";
+    String(s)
+      .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+      .slice(0, 40) || "cat";
 
   async function htmlToPdf(htmlStr, outBaseName /* no ext */) {
     const htmlPath = path.join(PRINT_DIR, `${outBaseName}.html`);
     const pdfPath = path.join(PRINT_DIR, `${outBaseName}.pdf`);
     fs.writeFileSync(htmlPath, htmlStr, "utf8");
 
-    const browser = await puppeteer.launch({ 
+    const chromePath = await getChromeExecutablePath();
+    const launchOptions = {
       headless: "new",
-      executablePath: 'C:\\Users\\Administrator\\.cache\\puppeteer\\chrome\\win64-141.0.7390.76\\chrome-win64\\chrome.exe',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -822,14 +1195,21 @@ router.post("/:invSeq/print-html", async (req, res) => {
         "--no-zygote",
         "--disable-gpu"
       ]
-    });
+    };
+
+    // Only set executablePath if we found one
+    if (chromePath) {
+      launchOptions.executablePath = chromePath;
+    }
+
+    const browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     await page.goto(`file://${htmlPath}`, { waitUntil: "load" });
     await page.pdf({
       path: pdfPath,
       printBackground: true,
       width: "80mm",
-      margin: { top: "4mm", right: "4mm", bottom: "4mm", left: "4mm" },
+      margin: { top: "4mm", right: "4mm", bottom: "4mm", left: "4mm" }
     });
     await browser.close();
     return { htmlPath, pdfPath };
@@ -842,11 +1222,17 @@ router.post("/:invSeq/print-html", async (req, res) => {
         const opts = {};
         if (targetPrinter) opts.printer = String(targetPrinter);
         await printPdfLib.print(pdfPath, opts);
-        return { ok: true, method: "pdf-to-printer", printer: targetPrinter || "default" };
+        return {
+          ok: true,
+          method: "pdf-to-printer",
+          printer: targetPrinter || "default"
+        };
       } catch (e) {
         // continue to fallback
       }
     }
+
+    console.log("targetPrinter", targetPrinter);
 
     // Fallbacks
     try {
@@ -864,15 +1250,33 @@ router.post("/:invSeq/print-html", async (req, res) => {
         }
       } else {
         const args = targetPrinter ? ["-d", targetPrinter, pdfPath] : [pdfPath];
-        await execAsync(`lp ${args.map(a => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ")}`);
+        await execAsync(
+          `lp ${args
+            .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
+            .join(" ")}`
+        );
       }
-      return { ok: true, method: "os-fallback", printer: targetPrinter || "default" };
+      return {
+        ok: true,
+        method: "os-fallback",
+        printer: targetPrinter || "default"
+      };
     } catch (err) {
-      return { ok: false, error: String(err?.message || err), printer: targetPrinter || "default" };
+      return {
+        ok: false,
+        error: String(err?.message || err),
+        printer: targetPrinter || "default"
+      };
     }
   }
 
-const buildKitchenHtml = (inv, categoryName, catItems, dateStr, timeStr) => `<!DOCTYPE html>
+  const buildKitchenHtml = (
+    inv,
+    categoryName,
+    catItems,
+    dateStr,
+    timeStr
+  ) => `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head><meta charset="UTF-8"><title>${categoryName}</title></head>
 <body style="margin:0;padding:0;font-family:Tahoma,Arial,sans-serif;color:#000;">
@@ -894,13 +1298,23 @@ const buildKitchenHtml = (inv, categoryName, catItems, dateStr, timeStr) => `<!D
         </tr>
       </thead>
       <tbody>
-        ${catItems.map(r => `
+        ${catItems
+          .map(
+            (r) => `
           <tr>
-            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;">${r?.notice || ""}</td>
-            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;">${r.QTY}</td>
-              <td style="border-bottom:1px solid #000;padding:4px 4px;">${r.item_name || r.ITEM_NO}</td>
+            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;">${
+              r?.notice || ""
+            }</td>
+            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;">${
+              r.QTY
+            }</td>
+              <td style="border-bottom:1px solid #000;padding:4px 4px;">${
+                r.item_name || r.ITEM_NO
+              }</td>
           </tr>
-        `).join("")}
+        `
+          )
+          .join("")}
       </tbody>
     </table>
     <div style="margin-top:6mm;height:2mm;background:#000;"></div>
@@ -908,7 +1322,13 @@ const buildKitchenHtml = (inv, categoryName, catItems, dateStr, timeStr) => `<!D
 </body>
 </html>`;
 
-const buildFullHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOCTYPE html>
+  const buildFullHtml = (
+    inv,
+    items,
+    dateStr,
+    timeStr,
+    wasPrintedBefore
+  ) => `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
   <meta charset="UTF-8" />
@@ -918,7 +1338,11 @@ const buildFullHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOC
 <body style="margin:0;padding:0;font-family:Tahoma, Arial, sans-serif; color:#000;">
   <div style="width:70mm;margin:0 auto;padding:6mm 4mm;box-sizing:border-box;">
     <div style="display:grid;grid-template-columns:1fr auto;align-items:end;margin-bottom:2mm;font-size:14px;font-weight:700;">
-      <div style="justify-self:start;letter-spacing:.2px;">${"الميزان"} ${wasPrintedBefore ? '<span style="font-size:11px;font-weight:700;margin-inline-start:6px;">للمتابعة</span>' : ''}</div>
+      <div style="justify-self:start;letter-spacing:.2px;">${"الميزان"} ${
+        wasPrintedBefore
+          ? '<span style="font-size:11px;font-weight:700;margin-inline-start:6px;">للمتابعة</span>'
+          : ''
+      }</div>
       <div style="justify-self:end;display:flex;align-items:center;gap:6px;font-weight:700;">
         <span>القائمة</span><span>${inv.NUM1 || ""}</span>
       </div>
@@ -936,7 +1360,9 @@ const buildFullHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOC
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;">
         <div style="display:grid;place-items:center;width:22mm;height:12mm;border:2px solid #333;background:#fff;">
-          <div style="font-size:18px;font-weight:700;line-height:1;">${inv.INV_FT_NO || ""}</div>
+          <div style="font-size:18px;font-weight:700;line-height:1;">${
+            inv.INV_FT_NO || ""
+          }</div>
         </div>
         <div style="margin-top:1.2mm;font-size:12px;font-weight:700;">الطاولة</div>
       </div>
@@ -944,72 +1370,130 @@ const buildFullHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOC
 
     <div style="border-top:3px solid #000;margin:3mm 0 2mm;"></div>
 
-    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <table style="width:100%;border-collapse:collapse;font-size:10.5px;">
       <thead>
         <tr>
-         <th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;text-decoration:underline;">المادة</th>
-         <th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;width:16mm;text-decoration:underline;">العدد</th>
-          <th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;width:28mm;text-decoration:underline;">الملاحظات</th>
-          
-         
+          <th style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;font-weight:700;text-decoration:underline;">الصنف</th>
+          <th style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;font-weight:700;width:10mm;text-decoration:underline;">كود</th>
+          <th style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;font-weight:700;width:8mm;text-decoration:underline;">ع</th>
+          <th style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;font-weight:700;width:10mm;text-decoration:underline;">سعر</th>
+          <th style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;font-weight:700;width:12mm;text-decoration:underline;">إجمالي</th>
         </tr>
       </thead>
       <tbody>
-        ${items.map(r => `
+        ${items
+          .map(
+            (r) => `
           <tr>
-          <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;">${r?.item_name || r?.ITEM_NO}</td>
-            
-            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;width:16mm;">${r.QTY}</td>
-            <td style="border-bottom:1px solid #000;padding:4px 4px;text-align:right;vertical-align:middle;width:28mm;">${r?.notice || ""}</td>
-            
+            <td style="border-bottom:1px solid #000;padding:3px 2px;text-align:right;vertical-align:top;">
+              <div style="font-weight:700;">${r?.item_name || r?.ITEM_NO}</div>
+              <div style="font-size:9px;margin-top:1px;">${r?.category_name || ""}</div>
+              ${
+                r?.notice
+                  ? `<div style="font-size:9px;margin-top:1px;">ملاحظة: ${r.notice}</div>`
+                  : ""
+              }
+            </td>
+            <td style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;vertical-align:top;width:10mm;">${
+              r?.ITEM_NO || ""
+            }</td>
+            <td style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;vertical-align:top;width:8mm;">${
+              r?.QTY ?? ""
+            }</td>
+            <td style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;vertical-align:top;width:10mm;">${
+              r?.PRICE ?? ""
+            }</td>
+            <td style="border-bottom:1px solid #000;padding:3px 2px;text-align:center;vertical-align:top;width:12mm;">${
+              r?.line_total ?? ""
+            }</td>
           </tr>
-        `).join("")}
+        `
+          )
+          .join("")}
       </tbody>
     </table>
 
-    <div style="margin-top:4mm;height:10mm;background:#333;"></div>
+    <div style="border-top:2px solid #000;margin:3mm 0 2mm;"></div>
+    <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;">
+      <span>الإجمالي</span>
+      <span>${items.reduce((s, r) => s + (Number(r?.line_total) || 0), 0).toFixed(2)}</span>
+    </div>
+    <div style="margin-top:3mm;height:6mm;background:#333;"></div>
   </div>
 </body>
 </html>`;
 
   // ===== Route Body =========================================================
   const printers = await getPrintersUnicode(); // -> array of names
-  console.log("Printers:", printers.map(p => p));
+  console.log(
+    "Printers:",
+    printers.map((p) => p)
+  );
 
   try {
     const { invSeq } = req.params;
     const { printerName } = req.body || {};
-    await executeQuery(`UPDATE INVOICE SET PAID = 0, PRINTED = 1 WHERE inv_seq = ?`, [invSeq]);
+    await executeQuery(
+      `UPDATE INVOICE SET PAID = 0, PRINTED = 1 WHERE inv_seq = ?`,
+      [invSeq]
+    );
 
-    // Load header
+    // Load header with TRACE field to track last printed auto_seq
     const [inv] = await executeQuery(
-      `SELECT inv_seq, NUM1, INV_FT_NO, INV_DATE, INV_CASH_NAME, INV_NOTE, PRINTED
+      `SELECT inv_seq, NUM1, INV_FT_NO, INV_DATE, INV_CASH_NAME, INV_NOTE, PRINTED, TRACE
        FROM INVOICE WHERE inv_seq = ?`,
       [invSeq]
     );
-    if (!inv) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!inv)
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
 
-    // Load items
-    const items = await executeQuery(
-      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.PRICE,
-              (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total,
+    // Get the last printed auto_seq (stored in TRACE field, or 0 if never printed)
+    const lastPrintedAutoSeq = Number(inv.TRACE || 0);
+
+    // Load ALL items first (to calculate totals for full invoice)
+    let allItems = await executeQuery(
+      `SELECT im.print_test, im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.P AS PRICE,
+              (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total,
               cc.CLASS_NAME AS category_name
        FROM INVOICE_MENU im
        LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
        LEFT JOIN CLASSCODE cc ON CAST(it.CLASS AS varchar(50)) = CAST(cc.CLASS_NO AS varchar(50))
-       WHERE im.INV_SEQ = ?
+       WHERE im.INV_SEQ = ? AND print_test = 0
        ORDER BY im.auto_seq`,
       [invSeq]
     );
+    allItems = allItems.filter((item) => item.print_test == 0);
+    // If there are no items at all, do NOT proceed with printing or marking invoice as printed
+    if (!allItems || allItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No items to print for this invoice",
+        invSeq,
+      });
+    }
+    // Filter to only NEW items (items with auto_seq > lastPrintedAutoSeq)
+    const newItems = allItems.filter(
+      (item) => Number(item.auto_seq || 0) > lastPrintedAutoSeq
+    );
 
-    const total = items.reduce((s, r) => s + (Number(r.line_total) || 0), 0);
+    // Use newItems for kitchen tickets (if any), but allItems for the full invoice
+    // If first print (lastPrintedAutoSeq === 0), use all items; otherwise use only new items for kitchen
+    const itemsForKitchen = lastPrintedAutoSeq > 0 ? newItems : allItems;
+
+    const total = allItems.reduce((s, r) => s + (Number(r.line_total) || 0), 0);
     const date = new Date(inv.INV_DATE || Date.now());
     const dateStr = new Date(date).toLocaleDateString("ar-SA");
     const timeStr = new Date(date).toLocaleTimeString("ar-SA");
     const wasPrintedBefore = Number(inv.PRINTED || 0) > 0;
-
-    // Group by category
-    const groupedItems = items.reduce((acc, item) => {
+    const getInvoiceItems = await executeQuery(
+      `UPDATE INVOICE_MENU SET print_test = 1 WHERE INV_SEQ = ?`,
+      [invSeq]
+    );
+    console.log("[invSeq]", getInvoiceItems);
+    // Group by category (only new items for kitchen tickets)
+    const groupedItems = itemsForKitchen.reduce((acc, item) => {
       const key = item.category_name || "غير مصنف";
       (acc[key] = acc[key] || []).push(item);
       return acc;
@@ -1020,75 +1504,145 @@ const buildFullHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOC
     const printersByNorm = new Map();
     (printers || []).forEach((p) => printersByNorm.set(normalizeArabic(p), p));
 
-    // 1) Print each category to its own printer
+    // 1) Print each category to its own printer (only if there are new items)
     const perCategoryResults = [];
-    for (const [catName, catItems] of Object.entries(groupedItems)) {
-      const matchPrinter = printersByNorm.get(normalizeArabic(catName));
-      if (!matchPrinter) {
+    if (itemsForKitchen.length > 0) {
+      for (const [catName, catItems] of Object.entries(groupedItems)) {
+        const matchPrinter = printersByNorm.get(normalizeArabic(catName));
+        if (!matchPrinter) {
+          perCategoryResults.push({
+            category: catName,
+            printed: false,
+            reason: "no matching printer by name"
+          });
+          continue;
+        }
+
+        const catHtml = buildKitchenHtml(
+          inv,
+          catName,
+          catItems,
+          dateStr,
+          timeStr
+        );
+        const base = `invoice_${invSeq}_cat_${safeForFile(catName)}`;
+        const { pdfPath: catPdfPath } = await htmlToPdf(catHtml, base);
+        const r = await printPdfFile(catPdfPath, matchPrinter);
         perCategoryResults.push({
           category: catName,
-          printed: false,
-          reason: "no matching printer by name",
+          printed: !!r.ok,
+          printer: matchPrinter,
+          method: r.method || "unknown",
+          error: r.ok ? undefined : r.error
         });
-        continue;
       }
-
-      const catHtml = buildKitchenHtml(inv, catName, catItems, dateStr, timeStr);
-      const base = `invoice_${invSeq}_cat_${safeForFile(catName)}`;
-      const { pdfPath: catPdfPath } = await htmlToPdf(catHtml, base);
-      const r = await printPdfFile(catPdfPath, matchPrinter);
+    } else {
+      // No new items to print for kitchen
       perCategoryResults.push({
-        category: catName,
-        printed: !!r.ok,
-        printer: matchPrinter,
-        method: r.method || "unknown",
-        error: r.ok ? undefined : r.error,
+        category: "all",
+        printed: false,
+        reason: "no new items to print"
       });
     }
 
     // 2) Print the full invoice to default (or to req.body.printerName if provided)
-    const fullHtml = buildFullHtml(inv, items, dateStr, timeStr, wasPrintedBefore);
+    // Use allItems for the full invoice (to show all items including previously printed ones)
+    const fullHtml = buildFullHtml(
+      inv,
+      allItems,
+      dateStr,
+      timeStr,
+      wasPrintedBefore
+    );
     const fullBase = `invoice_${invSeq}_full`;
     const { htmlPath, pdfPath } = await htmlToPdf(fullHtml, fullBase);
 
-    const finalPrint = await printPdfFile(pdfPath, printerName /* undefined => default */);
-    const finalOk = !!finalPrint.ok;
+    const finalPrint = await printPdfFile(
+      pdfPath,
+      "fol" /* undefined => default */
+    );
+    const finalOk = finalPrint.ok;
+    const updateinvSeq =   await executeQuery(
+        `UPDATE INVOICE_MENU SET PP = 1 WHERE inv_seq = ?`,
+        [invSeq]
+      );
 
-    // Update status only if the final invoice printed OK
+      await executeQuery(
+        `UPDATE INVOICE SET PP = 1, LOCK = 1 WHERE inv_seq = ?`,
+        [invSeq]
+      );
+    // Update status and TRACE field only if the final invoice printed OK
+    console.log("invSeq", updateinvSeq);
     if (finalOk) {
+     
       try {
-        await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 1 WHERE inv_seq = ?`, [invSeq]);
-      } catch (_) {}
+        // Only update TRACE if we printed new items (so next print will only show newer items)
+        if (itemsForKitchen.length > 0) {
+          // Calculate the maximum auto_seq that was just printed
+          const maxAutoSeq = Math.max(
+            ...itemsForKitchen.map((item) => Number(item.auto_seq || 0))
+          );
+
+          await executeQuery(
+            `UPDATE INVOICE SET PAID = 2, PRINTED = 1, TRACE = ?, PP = 1, LOCK = 1 WHERE inv_seq = ?`,
+            [maxAutoSeq, invSeq]
+          );
+        } else {
+          // No new items printed, just update status but keep TRACE as is
+          await executeQuery(
+            `UPDATE INVOICE SET PAID = 2, PRINTED = 1, PP = '1' WHERE inv_seq = ?`,
+            [invSeq]
+          );
+        }
+      } catch (err) {
+        console.log("err", err);
+      }
     }
 
     return res.json({
       success: finalOk,
-      message: finalOk ? "Printed kitchen tickets by category and final invoice" : "Printing finished with errors",
-      totals: { items: items.length, amount: total },
+      message: finalOk
+        ? itemsForKitchen.length > 0
+          ? "Printed kitchen tickets by category and final invoice"
+          : "Printed final invoice (no new items for kitchen)"
+        : "Printing finished with errors",
+      totals: {
+        items: allItems.length,
+        amount: total,
+        newItemsPrinted: itemsForKitchen.length
+      },
       perCategoryResults,
       final: {
         ok: finalOk,
         method: finalPrint.method || "unknown",
-        printer: finalPrint.printer || (printerName || "default"),
+        printer: finalPrint.printer || printerName || "default",
         error: finalOk ? undefined : finalPrint.error,
         pdfPath,
-        htmlPath,
-      },
+        htmlPath
+      }
     });
   } catch (err) {
     console.error("print-html error:", err);
-    return res.status(500).json({ success: false, message: "Failed to print HTML", error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to print HTML",
+      error: err.message
+    });
   }
 });
-
 
 router.post("/:invSeq/print-html-priced", async (req, res) => {
   // ===== Helpers (يمكنك رفعها لمستوى أعلى وإعادة استخدامها) ==============
   const normalizeArabic = (s = "") =>
-    String(s).normalize("NFC").replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "").trim();
+    String(s)
+      .normalize("NFC")
+      .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+      .trim();
 
   const safeForFile = (s = "") =>
-    String(s).replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "invoice";
+    String(s)
+      .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+      .slice(0, 40) || "invoice";
 
   const fmtNum = (n) => Number(n ?? 0).toLocaleString("ar-EG");
   const fmtMoney = (n) => Number(n ?? 0).toLocaleString("ar-EG"); // أضف رمز العملة لو حابب
@@ -1098,9 +1652,9 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
     const pdfPath = path.join(PRINT_DIR, `${outBaseName}.pdf`);
     fs.writeFileSync(htmlPath, htmlStr, "utf8");
 
-    const browser = await puppeteer.launch({ 
+    const chromePath = await getChromeExecutablePath();
+    const launchOptions = {
       headless: "new",
-      executablePath: 'C:\\Users\\Administrator\\.cache\\puppeteer\\chrome\\win64-141.0.7390.76\\chrome-win64\\chrome.exe',
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -1110,14 +1664,21 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
         "--no-zygote",
         "--disable-gpu"
       ]
-    });
+    };
+
+    // Only set executablePath if we found one
+    if (chromePath) {
+      launchOptions.executablePath = chromePath;
+    }
+
+    const browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     await page.goto(`file://${htmlPath}`, { waitUntil: "load" });
     await page.pdf({
       path: pdfPath,
       printBackground: true,
       width: "80mm",
-      margin: { top: "4mm", right: "4mm", bottom: "4mm", left: "4mm" },
+      margin: { top: "4mm", right: "4mm", bottom: "4mm", left: "4mm" }
     });
     await browser.close();
     return { htmlPath, pdfPath };
@@ -1130,30 +1691,57 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
         const opts = {};
         if (targetPrinter) opts.printer = String(targetPrinter);
         await printPdfLib.print(pdfPath, opts);
-        return { ok: true, method: "pdf-to-printer", printer: targetPrinter || "default" };
+        return {
+          ok: true,
+          method: "pdf-to-printer",
+          printer: targetPrinter || "default"
+        };
       } catch (_) {}
     }
     // نظام التشغيل fallback
+    console.log("targetPrinter", targetPrinter);
     try {
       if (process.platform === "win32") {
         const safePdf = pdfPath.replace(/'/g, "''");
         if (targetPrinter) {
           const safePrinter = String(targetPrinter).replace(/'/g, "''");
-          await execAsync(`powershell -NoProfile -Command "Start-Process -FilePath '${safePdf}' -Verb PrintTo -ArgumentList '${safePrinter}' -WindowStyle Hidden"`);
+          await execAsync(
+            `powershell -NoProfile -Command "Start-Process -FilePath '${safePdf}' -Verb PrintTo -ArgumentList '${safePrinter}' -WindowStyle Hidden"`
+          );
         } else {
-          await execAsync(`powershell -NoProfile -Command "Start-Process -FilePath '${safePdf}' -Verb Print -WindowStyle Hidden"`);
+          await execAsync(
+            `powershell -NoProfile -Command "Start-Process -FilePath '${safePdf}' -Verb Print -WindowStyle Hidden"`
+          );
         }
       } else {
         const args = targetPrinter ? ["-d", targetPrinter, pdfPath] : [pdfPath];
-        await execAsync(`lp ${args.map(a => `'${String(a).replace(/'/g, "'\\''")}'`).join(" ")}`);
+        await execAsync(
+          `lp ${args
+            .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
+            .join(" ")}`
+        );
       }
-      return { ok: true, method: "os-fallback", printer: targetPrinter || "default" };
+      return {
+        ok: true,
+        method: "os-fallback",
+        printer: targetPrinter || "default"
+      };
     } catch (err) {
-      return { ok: false, error: String(err?.message || err), printer: targetPrinter || "default" };
+      return {
+        ok: false,
+        error: String(err?.message || err),
+        printer: targetPrinter || "default"
+      };
     }
   }
 
-  const buildPricedHtml = (inv, items, dateStr, timeStr, wasPrintedBefore) => `<!DOCTYPE html>
+  const buildPricedHtml = (
+    inv,
+    items,
+    dateStr,
+    timeStr,
+    wasPrintedBefore
+  ) => `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
   <meta charset="UTF-8" />
@@ -1175,7 +1763,9 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
     <div style="display:grid;grid-template-columns:1fr 2fr;align-items:end;margin-bottom:2mm;font-size:14px;font-weight:700;">
      
       <div style="justify-self:end;display:flex;align-items:center;gap:6px;">
-        <span>القائمة</span><span style="font-size:18px;font-weight:900;padding:16px; padding-left:32px;padding-right:32px;width:100%;text-align:center;border:1px solid #000;border-radius:1px;">${inv.NUM1 ?? ""}</span>
+        <span>القائمة</span><span style="font-size:18px;font-weight:900;padding:16px; padding-left:32px;padding-right:32px;width:100%;text-align:center;border:1px solid #000;border-radius:1px;">${
+          inv.NUM1 ?? ""
+        }</span>
       </div>
     </div>
 
@@ -1198,12 +1788,13 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
         </tr>
       </thead>
       <tbody>
-        ${items.map(r => {
-          const qty = Number(r.QTY || 0);
-          const price = Number(r.PRICE || 0);
-          const line = Number(r.line_total ?? (qty * price));
-          const name = r.item_name || r.ITEM_NO || "";
-          return `
+        ${items
+          .map((r) => {
+            const qty = Number(r.QTY || 0);
+            const price = Number(r.PRICE || 0);
+            const line = Number(r.line_total ?? qty * price);
+            const name = r.item_name || r.ITEM_NO || "";
+            return `
             <tr>
               <td class="right">${name}</td>
               <td class="center">${fmtNum(qty)}</td>
@@ -1211,7 +1802,8 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
               <td class="center">${fmtMoney(line)}</td>
             </tr>
           `;
-        }).join("")}
+          })
+          .join("")}
       </tbody>
     </table>
 
@@ -1219,7 +1811,14 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
     <div style="margin-top:4mm;border-top:2px solid #000;padding-top:3mm;">
       <div style="display:flex;justify-content:space-between;font-weight:700;font-size:13px;">
         <div>الإجمالي الكلي</div>
-        <div>${fmtMoney(items.reduce((s, r) => s + Number(r.line_total ?? (Number(r.QTY||0)*Number(r.PRICE||0))), 0))}</div>
+        <div>${fmtMoney(
+          items.reduce(
+            (s, r) =>
+              s +
+              Number(r.line_total ?? Number(r.QTY || 0) * Number(r.PRICE || 0)),
+            0
+          )
+        )}</div>
       </div>
     </div>
 
@@ -1234,19 +1833,25 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
   try {
     const { invSeq } = req.params;
     const { printerName } = req.body || {};
-    await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`, [invSeq]);
+    await executeQuery(
+      `UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`,
+      [invSeq]
+    );
     // Load header
     const [inv] = await executeQuery(
       `SELECT inv_seq, NUM1, INV_FT_NO, INV_DATE, INV_CASH_NAME, INV_NOTE, PRINTED
        FROM INVOICE WHERE inv_seq = ?`,
       [invSeq]
     );
-    if (!inv) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!inv)
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
 
     // Load items
     const items = await executeQuery(
-      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.PRICE,
-              (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.P AS PRICE,
+              (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
        FROM INVOICE_MENU im
        LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
        WHERE im.INV_SEQ = ?
@@ -1260,42 +1865,64 @@ router.post("/:invSeq/print-html-priced", async (req, res) => {
     const wasPrintedBefore = Number(inv.PRINTED || 0) > 0;
 
     // Build priced HTML for ALL items (no per-category tickets here)
-    const pricedHtml = buildPricedHtml(inv, items, dateStr, timeStr, wasPrintedBefore);
+    const pricedHtml = buildPricedHtml(
+      inv,
+      items,
+      dateStr,
+      timeStr,
+      wasPrintedBefore
+    );
     const base = `invoice_${invSeq}_priced`;
     const { htmlPath, pdfPath } = await htmlToPdf(pricedHtml, base);
 
     // Print once (default or specific printer)
-    const result = await printPdfFile(pdfPath, printerName /* undefined => default */);
+    const result = await printPdfFile(
+      pdfPath,
+      printerName /* undefined => default */
+    );
     const ok = !!result.ok;
 
     if (ok) {
       try {
-        await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`, [invSeq]);
+        await executeQuery(
+          `UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`,
+          [invSeq]
+        );
       } catch (_) {}
     }
 
     return res.json({
       success: ok,
-      message: ok ? "Printed one priced invoice for all items" : "Failed to print priced invoice",
+      message: ok
+        ? "Printed one priced invoice for all items"
+        : "Failed to print priced invoice",
       final: {
         ok,
         method: result.method || "unknown",
-        printer: result.printer || (printerName || "default"),
+        printer: result.printer || printerName || "default",
         error: ok ? undefined : result.error,
         pdfPath,
-        htmlPath,
+        htmlPath
       },
       totals: {
         items: items.length,
-        amount: items.reduce((s, r) => s + Number(r.line_total ?? (Number(r.QTY||0)*Number(r.PRICE||0))), 0),
-      },
+        amount: items.reduce(
+          (s, r) =>
+            s +
+            Number(r.line_total ?? Number(r.QTY || 0) * Number(r.PRICE || 0)),
+          0
+        )
+      }
     });
   } catch (err) {
     console.error("print-html-priced error:", err);
-    return res.status(500).json({ success: false, message: "Failed to print priced invoice", error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to print priced invoice",
+      error: err.message
+    });
   }
 });
-
 
 // Print to kitchen (PRINTED=1) then print customer bill (PRINTED=2)
 // POST /api/invoice/:invSeq/print-both { kitchenPrinter?: string, clientPrinter?: string }
@@ -1309,11 +1936,14 @@ router.post("/:invSeq/print-both", async (req, res) => {
       `SELECT inv_seq, NUM1, INV_FT_NO, INV_DATE, INV_CASH_NAME, INV_NOTE FROM INVOICE WHERE inv_seq = ?`,
       [invSeq]
     );
-    if (!inv) return res.status(404).json({ success: false, message: "Invoice not found" });
+    if (!inv)
+      return res
+        .status(404)
+        .json({ success: false, message: "Invoice not found" });
 
     const items = await executeQuery(
-      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.PRICE,
-              (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+      `SELECT im.auto_seq, im.ITEM_NO, it.Item_name AS item_name, im.QTY, im.P AS PRICE,
+              (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
        FROM INVOICE_MENU im
        LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
        WHERE im.INV_SEQ = ?
@@ -1322,7 +1952,12 @@ router.post("/:invSeq/print-both", async (req, res) => {
     );
 
     // 1) Kitchen print: set PRINTED=1 first
-    try { await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 1 WHERE inv_seq = ?`, [invSeq]); } catch { }
+    try {
+      await executeQuery(
+        `UPDATE INVOICE SET PAID = 2, PRINTED = 1 WHERE inv_seq = ?`,
+        [invSeq]
+      );
+    } catch {}
 
     // Generate a simple kitchen ticket
     const date = new Date(inv.INV_DATE || Date.now());
@@ -1330,45 +1965,87 @@ router.post("/:invSeq/print-both", async (req, res) => {
     const timeStr = new Date(date).toLocaleTimeString('ar-SA');
 
     const kitchenHtml = `<!DOCTYPE html>
-<html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>مطبخ ${inv.NUM1}</title>
+<html dir="rtl" lang="ar"><head><meta charset="UTF-8"><title>مطبخ ${
+      inv.NUM1
+    }</title>
 <style>body{margin:0;font-family:Tahoma,Arial}.c{width:70mm;margin:0 auto;padding:6mm 4mm}.h{display:flex;justify-content:space-between;font-weight:700}
 table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px solid #000;padding:4px;text-align:center}
 </style></head><body><div class="c">
   <div class="h"><span>مطبخ</span><span>القائمة ${inv.NUM1 || ''}</span></div>
   <div class="h" style="margin-top:2mm"><span>تاريخ ${dateStr}</span><span>الوقت ${timeStr}</span></div>
-  <div class="h" style="margin-top:2mm"><span>الطاولة</span><span>${inv.INV_FT_NO || ''}</span></div>
+  <div class="h" style="margin-top:2mm"><span>الطاولة</span><span>${
+    inv.INV_FT_NO || ''
+  }</span></div>
   <table style="margin-top:3mm"><thead><tr><th>المادة</th><th>العدد</th></tr></thead><tbody>
-  ${items.map(r => `<tr><td>${r.item_name || r.ITEM_NO}</td><td>${r.QTY}</td></tr>`).join('')}
+  ${items
+    .map(
+      (r) => `<tr><td>${r.item_name || r.ITEM_NO}</td><td>${r.QTY}</td></tr>`
+    )
+    .join('')}
   </tbody></table>
 </div></body></html>`;
 
-    const kitchenHtmlPath = path.join(PRINT_DIR, `invoice_${invSeq}_kitchen.html`);
-    const kitchenPdfPath = path.join(PRINT_DIR, `invoice_${invSeq}_kitchen.pdf`);
+    const kitchenHtmlPath = path.join(
+      PRINT_DIR,
+      `invoice_${invSeq}_kitchen.html`
+    );
+    const kitchenPdfPath = path.join(
+      PRINT_DIR,
+      `invoice_${invSeq}_kitchen.pdf`
+    );
     fs.writeFileSync(kitchenHtmlPath, kitchenHtml, 'utf8');
 
     // Render to PDF and print to kitchen printer
     {
-      const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+      const chromePath = await getChromeExecutablePath();
+      const launchOptions = { headless: 'new', args: ['--no-sandbox'] };
+      if (chromePath) {
+        launchOptions.executablePath = chromePath;
+      }
+      const browser = await puppeteer.launch(launchOptions);
       const page = await browser.newPage();
       await page.goto(`file://${kitchenHtmlPath}`);
-      await page.pdf({ path: kitchenPdfPath, printBackground: true, width: '80mm', margin: { top: '4mm', right: '4mm', bottom: '4mm', left: '4mm' } });
+      await page.pdf({
+        path: kitchenPdfPath,
+        printBackground: true,
+        width: '80mm',
+        margin: { top: '4mm', right: '4mm', bottom: '4mm', left: '4mm' }
+      });
       await browser.close();
     }
 
     let kitchenPrinted = false;
     if (printPdfLib && typeof printPdfLib.print === 'function') {
-      try { await printPdfLib.print(kitchenPdfPath, kitchenPrinter ? { printer: String(kitchenPrinter) } : {}); kitchenPrinted = true; } catch { }
+      try {
+        await printPdfLib.print(
+          kitchenPdfPath,
+          kitchenPrinter ? { printer: String(kitchenPrinter) } : {}
+        );
+        kitchenPrinted = true;
+      } catch {}
     }
     if (!kitchenPrinted) {
       if (process.platform === 'win32') {
         const safe = kitchenPdfPath.replace(/'/g, "''");
         const cmd = kitchenPrinter
-          ? `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb PrintTo -ArgumentList '${String(kitchenPrinter).replace(/'/g, "''")}' -WindowStyle Hidden"`
+          ? `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb PrintTo -ArgumentList '${String(
+              kitchenPrinter
+            ).replace(/'/g, "''")}' -WindowStyle Hidden"`
           : `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb Print -WindowStyle Hidden"`;
-        try { await execAsync(cmd); } catch { }
+        try {
+          await execAsync(cmd);
+        } catch {}
       } else {
-        const args = kitchenPrinter ? [`-d`, kitchenPrinter, kitchenPdfPath] : [kitchenPdfPath];
-        try { await execAsync(`lp ${args.map(a => `'${String(a).replace(/'/g, "'\\''")}'`).join(' ')}`); } catch { }
+        const args = kitchenPrinter
+          ? [`-d`, kitchenPrinter, kitchenPdfPath]
+          : [kitchenPdfPath];
+        try {
+          await execAsync(
+            `lp ${args
+              .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
+              .join(' ')}`
+          );
+        } catch {}
       }
     }
 
@@ -1383,7 +2060,9 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px
       <div style="width:70mm;margin:0 auto;padding:6mm 4mm;box-sizing:border-box;">
         <div style="display:grid;grid-template-columns:1fr auto;align-items:end;margin-bottom:2mm;font-size:14px;font-weight:700;">
           <div style="justify-self:start;letter-spacing:.2px;">الميزان</div>
-          <div style="justify-self:end;display:flex;align-items:center;gap:6px;font-weight:700;"><span>القائمة</span><span>${inv.NUM1 || ''}</span></div>
+          <div style="justify-self:end;display:flex;align-items:center;gap:6px;font-weight:700;"><span>القائمة</span><span>${
+            inv.NUM1 || ''
+          }</span></div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr; gap:6mm;font-size:12px;margin-bottom:2mm;">
           <div style="display:flex;gap:4px"><span style="font-weight:700">تاريخ</span><span>${dateStr}</span></div>
@@ -1391,72 +2070,134 @@ table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px
         </div>
         <div style="display:grid;grid-template-columns:1fr auto;align-items:center;gap:6mm;margin-bottom:3mm;">
           <div style="display:flex;gap:12px;font-size:12px;"><div style="padding:2px 8px;border:1px solid #000;border-radius:2px;font-weight:700;text-decoration:underline;">صالة</div><div style="padding:2px 8px;border:1px solid #000;border-radius:2px;font-weight:700;text-decoration:underline;">صالة</div></div>
-          <div style="display:flex;flex-direction:column;align-items:center;"><div style="display:grid;place-items:center;width:22mm;height:12mm;border:2px solid #333;background:#fff;"><div style="font-size:18px;font-weight:700;line-height:1;">${inv.INV_FT_NO || ''}</div></div><div style="margin-top:1.2mm;font-size:12px;font-weight:700;">الطاولة</div></div>
+          <div style="display:flex;flex-direction:column;align-items:center;"><div style="display:grid;place-items:center;width:22mm;height:12mm;border:2px solid #333;background:#fff;"><div style="font-size:18px;font-weight:700;line-height:1;">${
+            inv.INV_FT_NO || ''
+          }</div></div><div style="margin-top:1.2mm;font-size:12px;font-weight:700;">الطاولة</div></div>
         </div>
         <div style="border-top:3px solid #000;margin:3mm 0 2mm;"></div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead><tr><th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;width:28mm;text-decoration:underline;">الملاحظات</th><th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;width:16mm;text-decoration:underline;">العدد</th><th style="border-bottom:1px solid #000;padding:3px 4px;text-align:center;font-weight:700;text-decoration:underline;">المادة</th></tr></thead>
-          <tbody>${items.map(r => `<tr><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:right;vertical-align:middle;width:28mm;"></td><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;width:16mm;">${r.QTY}</td><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;">${r.item_name || r.ITEM_NO}</td></tr>`).join('')}</tbody>
+          <tbody>${items
+            .map(
+              (r) =>
+                `<tr><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:right;vertical-align:middle;width:28mm;"></td><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;width:16mm;">${
+                  r.QTY
+                }</td><td style="border-bottom:1px solid #000;padding:4px 4px;text-align:center;vertical-align:middle;">${
+                  r.item_name || r.ITEM_NO
+                }</td></tr>`
+            )
+            .join('')}</tbody>
         </table>
         <div style="margin-top:4mm;height:10mm;background:#333;"></div>
       </div>
     </body></html>`;
 
-    const clientHtmlPath = path.join(PRINT_DIR, `invoice_${invSeq}_client.html`);
+    const clientHtmlPath = path.join(
+      PRINT_DIR,
+      `invoice_${invSeq}_client.html`
+    );
     const clientPdfPath = path.join(PRINT_DIR, `invoice_${invSeq}_client.pdf`);
     fs.writeFileSync(clientHtmlPath, clientHtml, 'utf8');
     {
-      const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+      const chromePath = await getChromeExecutablePath();
+      const launchOptions = { headless: 'new', args: ['--no-sandbox'] };
+      if (chromePath) {
+        launchOptions.executablePath = chromePath;
+      }
+      const browser = await puppeteer.launch(launchOptions);
       const page = await browser.newPage();
       await page.goto(`file://${clientHtmlPath}`);
-      await page.pdf({ path: clientPdfPath, printBackground: true, width: '80mm', margin: { top: '4mm', right: '4mm', bottom: '4mm', left: '4mm' } });
+      await page.pdf({
+        path: clientPdfPath,
+        printBackground: true,
+        width: '80mm',
+        margin: { top: '4mm', right: '4mm', bottom: '4mm', left: '4mm' }
+      });
       await browser.close();
     }
     let clientPrinted = false;
     if (printPdfLib && typeof printPdfLib.print === 'function') {
-      try { await printPdfLib.print(clientPdfPath, clientPrinter ? { printer: String(clientPrinter) } : {}); clientPrinted = true; } catch { }
+      try {
+        await printPdfLib.print(
+          clientPdfPath,
+          clientPrinter ? { printer: String(clientPrinter) } : {}
+        );
+        clientPrinted = true;
+      } catch {}
     }
     if (!clientPrinted) {
       if (process.platform === 'win32') {
         const safe = clientPdfPath.replace(/'/g, "''");
         const cmd = clientPrinter
-          ? `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb PrintTo -ArgumentList '${String(clientPrinter).replace(/'/g, "''")}' -WindowStyle Hidden"`
+          ? `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb PrintTo -ArgumentList '${String(
+              clientPrinter
+            ).replace(/'/g, "''")}' -WindowStyle Hidden"`
           : `powershell -NoProfile -Command "Start-Process -FilePath '${safe}' -Verb Print -WindowStyle Hidden"`;
-        try { await execAsync(cmd); } catch { }
+        try {
+          await execAsync(cmd);
+        } catch {}
       } else {
-        const args = clientPrinter ? [`-d`, clientPrinter, clientPdfPath] : [clientPdfPath];
-        try { await execAsync(`lp ${args.map(a => `'${String(a).replace(/'/g, "'\\''")}'`).join(' ')}`); } catch { }
+        const args = clientPrinter
+          ? [`-d`, clientPrinter, clientPdfPath]
+          : [clientPdfPath];
+        try {
+          await execAsync(
+            `lp ${args
+              .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
+              .join(' ')}`
+          );
+        } catch {}
       }
     }
 
     // Mark final state PRINTED=2
-    try { await executeQuery(`UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`, [invSeq]); } catch { }
+    try {
+      await executeQuery(
+        `UPDATE INVOICE SET PAID = 2, PRINTED = 2 WHERE inv_seq = ?`,
+        [invSeq]
+      );
+    } catch {}
 
-    return res.json({ success: true, message: 'Printed to kitchen and client', kitchenPrinter: kitchenPrinter || 'default', clientPrinter: clientPrinter || 'default' });
+    return res.json({
+      success: true,
+      message: 'Printed to kitchen and client',
+      kitchenPrinter: kitchenPrinter || 'default',
+      clientPrinter: clientPrinter || 'default'
+    });
   } catch (err) {
     console.error('print-both error:', err);
-    return res.status(500).json({ success: false, message: 'Failed to print both', error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to print both',
+      error: err.message
+    });
   }
 });
 
 // Add items to an open invoice
 // POST /api/invoice/:invSeq/items
 router.post("/:invSeq/items", async (req, res) => {
-  console.log("stockRows")
-  console.log(req.body)
+  console.log("stockRows");
+  console.log(req.body);
   try {
     const { invSeq } = req.params;
     const { itemNo, qty, price, notice, pp } = req.body;
 
-    if (!itemNo || !qty || !price) {
-      return res.status(400).json({ success: false, message: "itemNo, qty, and price are required" });
+    if (!itemNo || !qty || (!price && price != 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "itemNo, qty, and price are required"
+      });
     }
 
     try {
-      const stockRows = await executeQuery(`SELECT Balance FROM ITEM WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`, [itemNo]);
-      console.log(stockRows)
+      const stockRows = await executeQuery(
+        `SELECT Balance FROM ITEM WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`,
+        [itemNo]
+      );
+      console.log(stockRows);
       const currentBalance = Number(stockRows?.[0]?.Balance ?? 0);
-      console.log("stockRows", stockRows)
+      console.log("stockRows", stockRows);
       // if (currentBalance < Number(qty)) {
       //   return res.status(409).json({ success: false, message: `Insufficient stock. Available: ${currentBalance}` });
       // }
@@ -1465,9 +2206,9 @@ router.post("/:invSeq/items", async (req, res) => {
     }
 
     const insertQuery = `
-      INSERT INTO INVOICE_MENU (INV_SEQ, ITEM_NO, QTY, P, F_PRICE, S_PRICE, PRICE, notice, PP)
+      INSERT INTO INVOICE_MENU (INV_SEQ, ITEM_NO, QTY, P, F_PRICE, S_PRICE, PRICE, notice, PP, PRICE_D, item_price1, C, C$, PPP)
       OUTPUT Inserted.auto_seq AS auto_seq
-      VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     `;
 
     const values = [
@@ -1475,10 +2216,15 @@ router.post("/:invSeq/items", async (req, res) => {
       itemNo,
       qty,
       price, // F_PRICE
-      price, // S_PRICE
-      price, // PRICE
-      notice || "",
-      pp || 0
+      0, // F_PRICE
+      0, // S_PRICE
+      0, // PRICE
+      "",
+      0,
+      0, // D_PRICE
+      0, // item_price1
+      price, // C
+      0, // C$
     ];
 
     const inserted = await executeQuery(insertQuery, values);
@@ -1509,7 +2255,11 @@ router.post("/:invSeq/items", async (req, res) => {
     });
   } catch (error) {
     console.error("Error adding item to invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to add item", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to add item",
+      error: error.message
+    });
   }
 });
 
@@ -1522,8 +2272,10 @@ router.put("/:invSeq/items", async (req, res) => {
     // Force numbers
     qty = Number(qty);
     price = Number(price);
-    if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ success: false, message: "Invalid qty" });
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ success: false, message: "Invalid price" });
+    if (!Number.isFinite(qty) || qty <= 0)
+      return res.status(400).json({ success: false, message: "Invalid qty" });
+    if (!Number.isFinite(price) || price < 0)
+      return res.status(400).json({ success: false, message: "Invalid price" });
 
     // 1) Read the existing invoice line
     const checkQuery = `
@@ -1531,10 +2283,12 @@ router.put("/:invSeq/items", async (req, res) => {
       FROM INVOICE_MENU
       WHERE INV_SEQ = ? AND ITEM_NO = ?
     `;
-    console.log(checkQuery)
+    console.log(checkQuery);
     const existing = await executeQuery(checkQuery, [invSeq, itemNo]);
     if (!existing?.length) {
-      return res.status(404).json({ success: false, message: "Item not found in invoice" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found in invoice" });
     }
     const current = existing[0];
     const oldQty = Number(current.QTY) || 0;
@@ -1552,11 +2306,12 @@ router.put("/:invSeq/items", async (req, res) => {
         `,
         [deltaQty, itemNo, deltaQty]
       );
-      const changed = dec?.affectedRows ?? dec?.rowCount ?? dec?.rowsAffected?.[0] ?? 0;
+      const changed =
+        dec?.affectedRows ?? dec?.rowCount ?? dec?.rowsAffected?.[0] ?? 0;
       if (!changed) {
         return res.status(409).json({
           success: false,
-          message: "الكمية غير كافية لزيادة العدد المطلوب.",
+          message: "الكمية غير كافية لزيادة العدد المطلوب."
         });
       }
     } else if (deltaQty < 0) {
@@ -1580,8 +2335,7 @@ router.put("/:invSeq/items", async (req, res) => {
           F_PRICE = ?,
           S_PRICE = ?,
           PRICE = ?,
-          notice = ?,
-          PP = ?
+          notice = ?
       WHERE INV_SEQ = ? AND ITEM_NO = ?
       `,
       [
@@ -1590,9 +2344,8 @@ router.put("/:invSeq/items", async (req, res) => {
         price, // S_PRICE
         price, // PRICE
         notice ?? current.notice ?? "",
-        pp ?? current.PP ?? 0,
         invSeq,
-        itemNo,
+        itemNo
       ]
     );
 
@@ -1606,15 +2359,18 @@ router.put("/:invSeq/items", async (req, res) => {
         qty,
         price,
         notice: notice ?? current.notice ?? "",
-        pp: pp ?? current.PP ?? 0,
-      },
+        pp: pp ?? current.PP ?? 0
+      }
     });
   } catch (error) {
     console.error("Error updating item in invoice:", error);
-    return res.status(500).json({ success: false, message: "Failed to update item", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update item",
+      error: error.message
+    });
   }
 });
-
 
 // Delete item from invoice
 router.delete("/:invSeq/items/:itemNo", async (req, res) => {
@@ -1622,7 +2378,9 @@ router.delete("/:invSeq/items/:itemNo", async (req, res) => {
     const { invSeq, itemNo } = req.params;
 
     if (!itemNo) {
-      return res.status(400).json({ success: false, message: "itemNo is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "itemNo is required" });
     }
 
     // First, check if the item exists in the invoice
@@ -1635,7 +2393,9 @@ router.delete("/:invSeq/items/:itemNo", async (req, res) => {
     const existingItem = await executeQuery(checkQuery, [invSeq, itemNo]);
 
     if (existingItem.length === 0) {
-      return res.status(404).json({ success: false, message: "Item not found in invoice" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found in invoice" });
     }
 
     // Delete the item
@@ -1670,7 +2430,11 @@ router.delete("/:invSeq/items/:itemNo", async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting item from invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to delete item", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete item",
+      error: error.message
+    });
   }
 });
 
@@ -1681,7 +2445,9 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     const { qty, price, notice, pp } = req.body;
 
     if (!qty || !price) {
-      return res.status(400).json({ success: false, message: "qty and price are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "qty and price are required" });
     }
 
     // First, check if the item exists in the invoice
@@ -1694,7 +2460,9 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     const existingItem = await executeQuery(checkQuery, [invSeq, autoSeq]);
 
     if (existingItem.length === 0) {
-      return res.status(404).json({ success: false, message: "Item not found in invoice" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found in invoice" });
     }
 
     const currentItem = existingItem[0];
@@ -1703,13 +2471,19 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     const deltaQty = Number(qty) - Number(currentItem.QTY);
     if (deltaQty > 0) {
       try {
-        const stockRows = await executeQuery(`SELECT Balance FROM ITEM WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`, [currentItem.ITEM_NO]);
+        const stockRows = await executeQuery(
+          `SELECT Balance FROM ITEM WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`,
+          [currentItem.ITEM_NO]
+        );
         const currentBalance = Number(stockRows?.[0]?.Balance ?? 0);
         // if (currentBalance < deltaQty) {
         //   return res.status(409).json({ success: false, message: `Insufficient stock for increase. Available: ${currentBalance}` });
         // }
       } catch (e) {
-        console.warn("Stock check (auto update) failed (continuing):", e.message);
+        console.warn(
+          "Stock check (auto update) failed (continuing):",
+          e.message
+        );
       }
     }
 
@@ -1720,8 +2494,7 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
           F_PRICE = ?, 
           S_PRICE = ?, 
           PRICE = ?, 
-          notice = ?, 
-          PP = ?
+          notice = ?
       WHERE INV_SEQ = ? AND auto_seq = ?
     `;
 
@@ -1731,7 +2504,6 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
       price, // S_PRICE
       price, // PRICE
       notice || currentItem.notice || "",
-      pp || currentItem.PP || 0,
       invSeq,
       autoSeq
     ];
@@ -1742,7 +2514,9 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     try {
       if (deltaQty !== 0) {
         await executeQuery(
-          `UPDATE ITEM SET Balance = CAST(Balance AS float) ${deltaQty > 0 ? '-' : '+'} CAST(? AS float) WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`,
+          `UPDATE ITEM SET Balance = CAST(Balance AS float) ${
+            deltaQty > 0 ? '-' : '+'
+          } CAST(? AS float) WHERE CAST(Item_no AS varchar(50)) = CAST(? AS varchar(50))`,
           [Math.abs(deltaQty), currentItem.ITEM_NO]
         );
       }
@@ -1765,7 +2539,11 @@ router.put("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating item in invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to update item", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to update item",
+      error: error.message
+    });
   }
 });
 
@@ -1775,7 +2553,9 @@ router.delete("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     const { invSeq, autoSeq } = req.params;
 
     if (!autoSeq) {
-      return res.status(400).json({ success: false, message: "autoSeq is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "autoSeq is required" });
     }
 
     // First, check if the item exists in the invoice
@@ -1788,7 +2568,9 @@ router.delete("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     const existingItem = await executeQuery(checkQuery, [invSeq, autoSeq]);
 
     if (existingItem.length === 0) {
-      return res.status(404).json({ success: false, message: "Item not found in invoice" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Item not found in invoice" });
     }
 
     // Delete the item
@@ -1823,7 +2605,10 @@ router.delete("/:invSeq/items/auto/:autoSeq", async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting item from invoice:", error);
-    res.status(500).json({ success: false, message: "Failed to delete item", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete item",
+      error: error.message
+    });
   }
 });
-

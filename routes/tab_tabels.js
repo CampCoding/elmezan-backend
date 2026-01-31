@@ -71,7 +71,7 @@ router.get("/", async (req, res) => {
         FROM INVOICE
         WHERE INV_FT_NO IS NOT NULL
           AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
-      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1
+      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1 AND i.PAID = 2
       ORDER BY tt.Tb_sala, tt.Tb_no
     `;
      
@@ -89,10 +89,10 @@ router.get("/", async (req, res) => {
           im.ITEM_NO,
           it.Item_name AS item_name,
           im.QTY,
-          im.PRICE,
+          im.P AS PRICE,
           im.notice,
           im.PP,
-          (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+          (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
         FROM INVOICE_MENU im
         JOIN INVOICE i ON im.INV_SEQ = i.inv_seq
         LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
@@ -225,10 +225,10 @@ router.get("/groups", async (req, res) => {
           im.ITEM_NO,
           it.Item_name AS item_name,
           im.QTY,
-          im.PRICE,
+          im.P AS PRICE,
           im.notice,
           im.PP,
-          (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+          (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
         FROM INVOICE_MENU im
         JOIN INVOICE i ON im.INV_SEQ = i.inv_seq
         LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
@@ -617,8 +617,8 @@ router.get("/table/:tableNumber", async (req, res) => {
                ROW_NUMBER() OVER (PARTITION BY INV_FT_NO ORDER BY INV_DATE DESC, inv_seq DESC) AS rn
         FROM INVOICE
         WHERE INV_FT_NO IS NOT NULL
-          AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
-      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1
+          AND DATEDIFF(day, INV_DATE, GETDATE()) = 0 
+      ) i ON tt.Tb_no = i.INV_FT_NO AND i.rn = 1 AND i.PAID = 2
       LEFT JOIN CAPTAN_TB c ON i.INV_CAPTAIN_NO = c.CAPTAIN_NO
       WHERE tt.Tb_no = ?
     `;
@@ -645,10 +645,10 @@ router.get("/table/:tableNumber", async (req, res) => {
           im.ITEM_NO,
           it.Item_name AS item_name,
           im.QTY,
-          im.PRICE,
+          im.P AS PRICE,
           im.notice,
           im.PP,
-          (CAST(im.QTY AS float) * CAST(im.PRICE AS float)) AS line_total
+          (CAST(im.QTY AS float) * CAST(im.P AS float)) AS line_total
         FROM INVOICE_MENU im
         LEFT JOIN ITEM it ON CAST(it.Item_no AS varchar(50)) = CAST(im.ITEM_NO AS varchar(50))
         WHERE im.INV_SEQ = ?

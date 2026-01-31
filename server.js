@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const areaRoutes = require("./routes/areas");
-const tableRoutes = require("./routes/tables"); 
+const tableRoutes = require("./routes/tables");  
 const tabTabelsRoutes = require("./routes/tab_tabels");
 const bookingRoutes = require("./routes/bookings");
 const captainRoutes = require("./routes/captains");
@@ -19,17 +19,24 @@ const menuRoutes = require("./routes/menu");
 const invoiceRoutes = require("./routes/invoice");
 const flavorsRoutes = require("./routes/flavors");
 const printerRoutes = require("./routes/printers");
+const deviceRoutes = require("./routes/device");
 const { exec } = require("child_process");
-
+ 
 // Import database functions for testing
 const { connectDB, executeQuery } = require("./config/database");
 const { initializeTabTabels } = require("./config/init-tab-tabels");
+
+// Import license middleware
+const licenseCheck = require("./middleware/licenseCheck");
 
 // Middleware
 app.use(cors());
 // app.use(morgan("combined")); 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// License check middleware - يتحقق من الترخيص قبل أي عملية
+app.use(licenseCheck);
 
 // Routes
 app.use("/api/auth", authRoutes);
@@ -40,10 +47,11 @@ app.use("/api/tab_tabels", tabTabelsRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/captains", captainRoutes);
 app.use("/api/menu", menuRoutes);
-// app.use("/api/orders", orderRoutes); // Removed - using invoice-based workflow instead
+// app.use("/api/orders", orderRoutes); // Removed --- --->>> using invoice-based  --- --->>>  workflow instead.
 app.use("/api/invoice", invoiceRoutes);
 app.use("/api/flavors", flavorsRoutes);
 app.use("/api/printers", printerRoutes);
+app.use("/api/device", deviceRoutes);
 
 // Admin: graceful shutdown endpoint
 app.post("/api/admin/shutdown", async (req, res) => {
@@ -167,6 +175,148 @@ app.get("/api/test-db", async (req, res) => {
         database: process.env.DB_NAME,
         user: process.env.DB_USER,
       },
+    });
+  }
+});
+
+// Get device serial number endpoint
+app.get("/api/serial", async (req, res) => {
+  try {
+    const { exec } = require("child_process");
+    const util = require("util");
+    const execAsync = util.promisify(exec);
+    const crypto = require("crypto");
+    const os = require("os");
+
+    let serialNumber = "Not available";
+    let method = "none";
+    const systemInfo = {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      cpus: os.cpus().length,
+      totalMemory: os.totalmem(),
+    };
+
+    if (process.platform === "win32") {
+      try {
+        // Try multiple methods to get a unique identifier
+
+        // Method 1: BIOS Serial
+        try {
+          const { stdout: biosOutput } = await execAsync("wmic bios get serialnumber /value 2>nul");
+          const biosMatch = biosOutput.match(/SerialNumber=(\S+)/);
+          if (biosMatch && biosMatch[1] && biosMatch[1].trim() !== "" && biosMatch[1] !== "To be filled by O.E.M.") {
+            serialNumber = biosMatch[1].trim();
+            method = "bios";
+          }
+        } catch (e) { /* Continue to next method */ }
+
+        // Method 2: Motherboard Serial
+        if (serialNumber === "Not available") {
+          try {
+            const { stdout: baseboardOutput } = await execAsync("wmic baseboard get serialnumber /value 2>nul");
+            const baseboardMatch = baseboardOutput.match(/SerialNumber=(\S+)/);
+            if (baseboardMatch && baseboardMatch[1] && baseboardMatch[1].trim() !== "" && baseboardMatch[1] !== "To be filled by O.E.M.") {
+              serialNumber = baseboardMatch[1].trim();
+              method = "motherboard";
+            }
+          } catch (e) { /* Continue to next method */ }
+        }
+
+        // Method 3: Disk Drive Serial
+        if (serialNumber === "Not available") {
+          try {
+            const { stdout: diskOutput } = await execAsync("wmic diskdrive get serialnumber /value 2>nul");
+            const diskMatches = diskOutput.match(/SerialNumber=(\S+)/g);
+            if (diskMatches && diskMatches.length > 0) {
+              // Take the first non-empty serial
+              for (const match of diskMatches) {
+                const serial = match.replace("SerialNumber=", "").trim();
+                if (serial && serial !== "") {
+                  serialNumber = serial;
+                  method = "disk";
+                  break;
+                }
+              }
+            }
+          } catch (e) { /* Continue to next method */ }
+        }
+
+        // Method 4: CPU ID
+        if (serialNumber === "Not available") {
+          try {
+            const { stdout: cpuOutput } = await execAsync("wmic cpu get processorid /value 2>nul");
+            const cpuMatch = cpuOutput.match(/ProcessorId=(\S+)/);
+            if (cpuMatch && cpuMatch[1] && cpuMatch[1].trim() !== "") {
+              serialNumber = cpuMatch[1].trim();
+              method = "cpu";
+            }
+          } catch (e) { /* Continue to next method */ }
+        }
+
+        // Method 5: Generate hash from system info as fallback
+        if (serialNumber === "Not available") {
+          const hashInput = `${systemInfo.hostname}-${systemInfo.platform}-${systemInfo.arch}-${systemInfo.cpus}-${systemInfo.totalMemory}`;
+          serialNumber = crypto.createHash('md5').update(hashInput).digest('hex').substring(0, 16).toUpperCase();
+          method = "hash";
+        }
+
+      } catch (error) {
+        console.log("Error getting serial number:", error.message);
+        // Fallback to hash method
+        const hashInput = `${systemInfo.hostname}-${systemInfo.platform}-${systemInfo.arch}-${systemInfo.cpus}-${systemInfo.totalMemory}-${Date.now()}`;
+        serialNumber = crypto.createHash('md5').update(hashInput).digest('hex').substring(0, 16).toUpperCase();
+        method = "fallback-hash";
+      }
+    } else {
+      // For Linux/Mac
+      try {
+        const { stdout } = await execAsync("dmidecode -s system-serial-number 2>/dev/null || echo 'Not available'");
+        const dmidecodeResult = stdout.trim();
+        if (dmidecodeResult && dmidecodeResult !== "Not available") {
+          serialNumber = dmidecodeResult;
+          method = "dmidecode";
+        } else {
+          // Fallback to hostname + MAC address hash
+          const networkInterfaces = os.networkInterfaces();
+          let macAddress = "";
+          for (const interfaceName in networkInterfaces) {
+            const interfaces = networkInterfaces[interfaceName];
+            for (const iface of interfaces) {
+              if (iface.mac && iface.mac !== "00:00:00:00:00:00" && !iface.internal) {
+                macAddress = iface.mac;
+                break;
+              }
+            }
+            if (macAddress) break;
+          }
+          const hashInput = `${systemInfo.hostname}-${macAddress}-${systemInfo.platform}`;
+          serialNumber = crypto.createHash('md5').update(hashInput).digest('hex').substring(0, 16).toUpperCase();
+          method = "mac-hash";
+        }
+      } catch (error) {
+        // Final fallback
+        const hashInput = `${systemInfo.hostname}-${systemInfo.platform}-${Date.now()}`;
+        serialNumber = crypto.createHash('md5').update(hashInput).digest('hex').substring(0, 16).toUpperCase();
+        method = "fallback-hash";
+      }
+    }
+
+    res.json({
+      success: true,
+      serialNumber: serialNumber,
+      method: method,
+      platform: process.platform,
+      systemInfo: systemInfo,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error in serial endpoint:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve serial number",
+      error: error.message,
     });
   }
 });

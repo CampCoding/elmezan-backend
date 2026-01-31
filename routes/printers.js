@@ -8,20 +8,27 @@ const router = express.Router();
 router.get("/", async (req, res) => {
   try {
     console.log("🔍 Fetching available printers...");
-    
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
     let stdout, stderr;
-    
+
     try {
-      
-      const result = await execAsync('powershell "Get-WmiObject -Class Win32_Printer | Select-Object Name, DriverName, PortName, Default, Status | ConvertTo-Json"');
+      const result = await execAsync(
+        'powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-WmiObject -Class Win32_Printer | Select-Object Name, DriverName, PortName, Default, Status | ConvertTo-Json"',
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+      );
+
       stdout = result.stdout;
       stderr = result.stderr;
       console.log("PowerShell output:", stdout);
     } catch (powerShellError) {
       console.log("PowerShell failed, trying alternative method...");
-      
+
       try {
-        const result = await execAsync('reg query "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers" /s');
+        const result = await execAsync(
+          'reg query "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers" /s',
+          { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+        );
         stdout = result.stdout;
         stderr = result.stderr;
         console.log("Registry output:", stdout);
@@ -30,105 +37,117 @@ router.get("/", async (req, res) => {
         return res.status(500).json({
           success: false,
           message: "Failed to get printers - no compatible method available",
-          error: "PowerShell and Registry methods both failed"
+          error: "PowerShell and Registry methods both failed",
         });
       }
     }
-    
+
     if (stderr) {
       console.error("Error getting printers:", stderr);
       return res.status(500).json({
         success: false,
         message: "Failed to get printers",
-        error: stderr
+        error: stderr,
       });
     }
 
-    
     let printers = [];
-    
+
     if (stdout.trim()) {
       try {
-        
         const printerData = JSON.parse(stdout);
-        const printerArray = Array.isArray(printerData) ? printerData : [printerData];
-        
-        printers = printerArray.map(printer => ({
-          name: printer.Name || 'Unknown',
-          driver: printer.DriverName || 'Unknown',
-          port: printer.PortName || 'Unknown',
-          status: printer.Status || 'Unknown',
-          isDefault: printer.Default === true
+        const printerArray = Array.isArray(printerData)
+          ? printerData
+          : [printerData];
+
+        printers = printerArray.map((printer) => ({
+          name: printer.Name || "Unknown",
+          driver: printer.DriverName || "Unknown",
+          port: printer.PortName || "Unknown",
+          status: printer.Status || "Unknown",
+          isDefault: printer.Default === true,
         }));
       } catch (parseError) {
-        
         console.log("JSON parsing failed, trying registry output...");
-        const lines = stdout.trim().split('\n');
+        const lines = stdout.trim().split("\n");
         const printerNames = [];
-        
+
         for (const line of lines) {
-          if (line.includes('HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers\\')) {
-            const parts = line.split('\\');
+          if (
+            line.includes(
+              "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers\\"
+            )
+          ) {
+            const parts = line.split("\\");
             const printerName = parts[parts.length - 1];
-            if (printerName && !printerName.includes('HKEY_')) {
+            if (printerName && !printerName.includes("HKEY_")) {
               printerNames.push(printerName);
             }
           }
         }
-        
-        printers = printerNames.map(name => ({
+
+        printers = printerNames.map((name) => ({
           name: name,
-          driver: 'Unknown',
-          port: 'Unknown',
-          status: 'Unknown',
-          isDefault: false
+          driver: "Unknown",
+          port: "Unknown",
+          status: "Unknown",
+          isDefault: false,
         }));
       }
     }
 
     console.log(`✅ Found ${printers.length} printers`);
-    
+
     res.json({
       success: true,
       printers: printers,
-      total: printers.length
+      total: printers.length,
     });
-    
   } catch (error) {
     console.error("❌ Error fetching printers:", error);
     res.status(500).json({
       success: false,
       message: "Failed to get printers",
-      error: error.message
+      error: error.message,
     });
   }
 });
 
 
+
 router.get("/default", async (req, res) => {
   try {
     console.log("🔍 Getting default printer...");
-    
-    const { stdout, stderr } = await execAsync('powershell "Get-WmiObject -Class Win32_Printer | Where-Object {$_.Default -eq $true} | Select-Object Name | ConvertTo-Json"');
-    
+
+    // Make sure the response is explicitly UTF-8
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+    // Force PowerShell to output UTF-8 and make execAsync decode as UTF-8
+    const { stdout, stderr } = await execAsync(
+      'powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-WmiObject -Class Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object Name | ConvertTo-Json"',
+      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }
+    );
+
+    console.log("PowerShell default printer output:", stdout);
+
     if (stderr) {
       console.error("Error getting default printer:", stderr);
       return res.status(500).json({
         success: false,
         message: "Failed to get default printer",
-        error: stderr
+        error: stderr,
       });
     }
 
     let defaultPrinter = null;
-    
+
     if (stdout.trim()) {
       try {
         const defaultData = JSON.parse(stdout);
-        
+
         if (Array.isArray(defaultData) && defaultData.length > 0) {
-          defaultPrinter = defaultData[0].Name;
-        } else if (defaultData.Name) {
+          defaultPrinter = defaultData[0]?.Name || null;
+        } else if (defaultData?.Name) {
           defaultPrinter = defaultData.Name;
         }
       } catch (parseError) {
@@ -138,15 +157,14 @@ router.get("/default", async (req, res) => {
 
     res.json({
       success: true,
-      defaultPrinter: defaultPrinter
+      defaultPrinter,
     });
-    
   } catch (error) {
     console.error("❌ Error getting default printer:", error);
     res.status(500).json({
       success: false,
       message: "Failed to get default printer",
-      error: error.message
+      error: error.message,
     });
   }
 });

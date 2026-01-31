@@ -125,6 +125,17 @@ const createTables = [
     notice VARCHAR(255),
     PRICE REAL
   )`,
+
+  // License table for device activation and licensing
+  `CREATE TABLE IF NOT EXISTS License (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_serial VARCHAR(255) UNIQUE NOT NULL,
+    license_key VARCHAR(255) UNIQUE NOT NULL,
+    is_activated INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    activated_at DATETIME,
+    device_info TEXT
+  )`,
 ];
 
 // Sample data for testing
@@ -201,6 +212,10 @@ const insertSampleData = [
     (1, 'B001', datetime('now'), 'T1', 1, 50.00, 0),
     (2, 'B002', datetime('now', '+1 hour'), 'T3', 2, 75.00, 1),
     (3, 'B003', datetime('now', '+2 hours'), 'T5', 3, 100.00, 0)`,
+
+  // Insert sample license (سيتم تحديثه بالسيريال الحقيقي عند التفعيل الأول)
+  `INSERT OR IGNORE INTO License (device_serial, license_key, is_activated, device_info) VALUES
+    ('78BE4365F15B4982', 'AL-MIZAN-2024-001', 0, 'Demo Device - Windows x64')`,
 ];
 
 // Initialize database

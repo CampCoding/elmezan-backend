@@ -15,11 +15,11 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Query to get user from Open_ProgramQ view (as mentioned in Document.txt)
+    // Query to get user from Users view (as mentioned in Document.txt)
     const query = `
       SELECT User_Name, Admin, auto_no 
-      FROM Open_ProgramQ 
-      WHERE User_Name = ? AND (auto_no = 5 OR auto_no = 6)
+      FROM Users 
+      WHERE User_Name = ? AND (auto_no = 5 OR auto_no = 6 OR auto_no = 7 OR auto_no = 8OR auto_no = 9)
     `;
 
     const users = await executeQuery(query, [username]);
@@ -127,11 +127,11 @@ router.post('/check', async (req, res) => {
       });
     }
 
-    // Get user info from Open_ProgramQ
+    // Get user info from Users
     const userQuery = `
       SELECT User_Name, Admin, auto_no 
-      FROM Open_ProgramQ 
-      WHERE User_Name = ? AND (auto_no = 5 OR auto_no = 6)
+      FROM Users 
+      WHERE User_Name = ? AND (auto_no = 5 OR auto_no = 6 OR auto_no = 7 OR auto_no = 8)
     `;
 
     const users = await executeQuery(userQuery, [username]);
@@ -196,7 +196,7 @@ router.post('/me', async (req, res) => {
     // Get user info
     const userQuery = `
       SELECT User_Name, Admin, auto_no 
-      FROM Open_ProgramQ 
+      FROM Users 
       WHERE User_Name = ? AND (auto_no = 5 OR auto_no = 6)
     `;
 

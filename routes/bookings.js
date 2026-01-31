@@ -108,16 +108,19 @@ router.post('/', async (req, res) => {
     // Create the booking (insert into INVOICE table)
     const insertQuery = `
       INSERT INTO INVOICE (
+      PAID,
         INV_FT_NO, 
         from_date, 
+        
         to_date, 
         ROOM_RESERVE, 
         CUSTOMER_NAME, 
         INV_NOTE, 
         INV_DATE, 
         COST,
-        ROOM_RESERVE
-      ) VALUES (?, ?, ?, 1, ?, ?, GETDATE(), ?, 1)
+        ROOM_RESERVE,
+        PRINTED
+      ) VALUES (2, ?, ?, ?, 1, ?, ?, GETDATE(), ?, 1, 1)
     `;
 
     const result = await executeQuery(insertQuery, [

@@ -32,7 +32,7 @@ router.get("/area/:areaId", async (req, res) => {
                ROW_NUMBER() OVER (PARTITION BY INV_FT_NO ORDER BY INV_DATE DESC, inv_seq DESC) AS rn
         FROM INVOICE
         WHERE INV_FT_NO IS NOT NULL
-          AND DATEDIFF(day, INV_DATE, GETDATE()) = 0
+          AND DATEDIFF(day, INV_DATE, GETDATE()) = 0 
       )
       SELECT INV_FT_NO,
              CASE 
@@ -40,7 +40,7 @@ router.get("/area/:areaId", async (req, res) => {
                WHEN PAID = 2 AND PRINTED = 1 THEN 'red'
                ELSE 'green'
              END AS color
-      FROM latest
+      FROM latest 
       WHERE rn = 1
     `;
     const colors = await executeQuery(colorQuery);
